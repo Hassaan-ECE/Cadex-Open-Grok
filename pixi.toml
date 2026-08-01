@@ -1,0 +1,317 @@
+[workspace]
+name = "cadex"
+version = "0.0.1"
+description = "pixi instructions for cadex"
+authors = ["looooo <sppedflyer@gmail.com>"]
+channels = ["conda-forge"]
+platforms = [ "linux-64", "linux-aarch64", "osx-64", "osx-arm64", "win-64" ]
+requires-pixi = ">=0.48"
+
+[dependencies]
+blinker = "*"
+calculix = "*"
+ccache = "*"
+cmake = "*"
+coin3d = "*"
+compilers = ">=1.10,<1.11"
+conda-devenv = "*"
+debugpy = "*"
+defusedxml = "*"
+docutils = "*"
+doxygen = "*"
+eigen = ">=3.3,<5"
+fmt = "*"
+freetype = "*"
+git = "*"
+graphviz = "*"
+gtest= "*"
+harfbuzz = "*"
+hdf5 = "*"
+ifcopenshell = "*"
+lark = "*"
+libboost-devel = "*"
+lxml = "*"
+matplotlib = "*"
+nine = "*"
+ninja = "*"
+noqt5 = "*"
+numpy = ">=1.26,<1.27"
+nlohmann_json = "*"
+# Pinned exactly, not to a range: BOPAlgo's subshape ordering is not a
+# documented OCCT contract and has changed across releases, and five xscript
+# ops take 1-based TopExp::MapShapes ordinals as *saved script arguments*.
+# A patch bump that re-indexes them builds different geometry that still
+# passes isValid(). Gated by cadex_tests/test_subshape_enumeration.py; see
+# docs/DECISIONS.md ADR-025.
+occt = "==7.8.1"
+opencamlib = "*"
+opencv = "*"
+openssl = "*"
+pandas = "*"
+pcl = "*"
+pip = "*"
+pivy = "*"
+ply = "*"
+pre-commit = "*"
+# The engine suite's runner. Undeclared until ADR-060: it happened to be
+# importable in the environments the suite was first run in, so
+# `pixi run python -m pytest src/Mod/cadex/cadex_tests` -- the command
+# CLAUDE.md names as the minimum verification, and the one CI runs -- died
+# with "No module named pytest" on any clean checkout, taking both CI jobs
+# with it before they reached the packaged gate.
+pytest = "*"
+pyright = "==1.1.408"
+pybind11 = "*"
+pycollada = "*"
+pyside6 = "*"
+python = ">=3.11,<3.12"
+pythonocc-core = "*"
+pyyaml = "*"
+qt6-main = ">=6.8,<6.9"
+requests = "*"
+scipy = "*"
+six = "*"
+smesh = "*"
+swig = "*"
+sympy = "*"
+tbb-devel = ">=2022,<2023"
+vtk = "*"
+xerces-c = "*"
+xlutils = "*"
+yaml-cpp = "*"
+zlib = "*"
+zstd = "*"
+compiler-rt = ">=18.1.8,<22"
+
+## Linux Dependencies (x86-64)
+[target.linux-64.dependencies]
+clang = "*"
+clangxx = "*"
+kernel-headers_linux-64 = "*"
+libdrm-cos7-x86_64 = "*"
+libselinux-cos7-x86_64 = "*"
+libsepol-cos7-x86_64 = "*"
+libspnav = "*"
+libx11-common-cos7-x86_64 = "*"
+libx11-cos7-x86_64 = "*"
+libxau-cos7-x86_64 = "*"
+libxcb-cos7-x86_64 = "*"
+libxdamage-cos7-x86_64 = "*"
+libxext-cos7-x86_64 = "*"
+libxfixes-cos7-x86_64 = "*"
+libxi-cos7-x86_64 = "*"
+libxi-devel-cos7-x86_64 = "*"
+libxxf86vm-cos7-x86_64 = "*"
+llvm-openmp = "*"
+mesa-dri-drivers-cos7-x86_64 = "*"
+mesa-libegl-cos7-x86_64 = "*"
+mesa-libegl-devel-cos7-x86_64 = "*"
+mesa-libgl-cos7-x86_64 = "*"
+mesa-libgl-devel-cos7-x86_64 = "*"
+mold = "*"
+pixman-cos7-x86_64 = "*"
+qt6-wayland = ">=6.8,<6.9"
+sed = "*"
+sysroot_linux-64 = "*"
+xcb-util-cursor = "==0.1.5"  ## hack to address https://github.com/FreeCAD/FreeCAD/issues/26726
+xorg-x11-server-common-cos7-x86_64 = "*"
+xorg-x11-server-xvfb-cos7-x86_64 = "*"
+xorg-xproto = "*"
+
+## Linux Dependencies (aarch64)
+[target.linux-aarch64.dependencies]
+clang = "*"
+clangxx = "*"
+kernel-headers_linux-aarch64 = "*"
+libdrm-cos7-aarch64 = "*"
+libglvnd-cos7-aarch64 = "*"
+libglvnd-glx-cos7-aarch64 = "*"
+libselinux-cos7-aarch64 = "*"
+libsepol-cos7-aarch64 = "*"
+libspnav = "*"
+libx11-common-cos7-aarch64 = "*"
+libx11-cos7-aarch64 = "*"
+libxau-cos7-aarch64 = "*"
+libxcb-cos7-aarch64 = "*"
+libxdamage-cos7-aarch64 = "*"
+libxext-cos7-aarch64 = "*"
+libxfixes-cos7-aarch64 = "*"
+libxi-cos7-aarch64 = "*"
+libxi-devel-cos7-aarch64 = "*"
+libxxf86vm-cos7-aarch64 = "*"
+llvm-openmp = "*"
+mesa-dri-drivers-cos7-aarch64 = "*"
+mesa-khr-devel-cos7-aarch64 = "*"
+mesa-libegl-cos7-aarch64 = "*"
+mesa-libegl-devel-cos7-aarch64 = "*"
+mesa-libgbm-cos7-aarch64 = "*"
+mesa-libgl-cos7-aarch64 = "*"
+mesa-libgl-devel-cos7-aarch64 = "*"
+mesa-libglapi-cos7-aarch64 = "*"
+mold = "*"
+pixman-cos7-aarch64 = "*"
+qt6-wayland = ">=6.8,<6.9"
+sed = "*"
+sysroot_linux-aarch64 = "*"
+xcb-util-cursor = "==0.1.5"  ## hack to address https://github.com/FreeCAD/FreeCAD/issues/26726
+xorg-x11-server-common-cos7-aarch64 = "*"
+xorg-x11-server-xvfb-cos7-aarch64 = "*"
+xorg-xproto = "*"
+
+## macOS Dependencies (Intel)
+[target.osx-64.dependencies]
+sed = "*"
+
+## macOS Dependencies (Apple Silicon)
+[target.osx-arm64.dependencies]
+sed = "*"
+
+[target.win-64.dependencies]
+pthreads-win32 = "*"
+
+[pypi-dependencies]
+freecad-stubs = "*"
+# THIS SHIPS. `CARRIED_PYPI_PACKAGES` in
+# package/rattler-build/scripts/relocate_conda_environment.py carries the
+# wheel into the engine payload as unmanaged copy-verbatim files -- pypi
+# wheels have no conda-meta entry, so they need naming rather than
+# discovering -- and package/engine/build_engine_payload.sh hard-fails the
+# build if the payload cannot *import* mujoco 3.10.0. (This comment said
+# "DEVELOPMENT ONLY -- this does NOT ship" until 2026-07-31; it was written
+# before ADR-076 and was already wrong when M0 closed.)
+#
+# It is a pypi wheel rather than the correct home, conda-forge
+# `mujoco-python`, because that cannot be installed until the manifest is
+# re-solvable: adding any conda dependency forces a full re-solve, and a
+# full re-solve fails on its own today (qt6-main/occt drift against opencv,
+# vtk, smesh). Pinned exactly for the reason occt is -- MuJoCo disclaims
+# cross-version numerical reproducibility, every open_project asserts digest
+# equality, and since ADR-081 a version bump also changes every exported
+# MJCF file. See docs/DECISIONS.md ADR-075, ADR-076 and docs/MUJOCO.md M0.
+mujoco = "==3.10.0"
+
+## Qt 6 Configuration Presets
+[target.linux-64.tasks]
+configure-debug = { cmd = [ "cmake", "--preset", "conda-linux-debug", "{{ extra_args }}" ], args = [{ "arg" ="extra_args", "default" = "" }], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+configure-release = { cmd = [ "cmake", "--preset", "conda-linux-release" ], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+
+[target.linux-aarch64.tasks]
+configure-debug = { cmd = [ "cmake", "--preset", "conda-linux-debug", "{{ extra_args }}" ], args = [{ "arg" = "extra_args", "default" = "" }], depends-on= ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+configure-release = { cmd = [ "cmake", "--preset", "conda-linux-release" ], depends-on= ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+
+[target.osx-64.tasks]
+configure-debug = { cmd = [ "cmake", "--preset", "conda-macos-debug", "{{ extra_args }}" ], args = [{ "arg" = "extra_args", "default" = "" }], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+configure-release = { cmd = [ "cmake", "--preset", "conda-macos-release" ], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+
+[target.osx-arm64.tasks]
+configure-debug = { cmd = [ "cmake", "--preset", "conda-macos-debug", "{{ extra_args }}" ], args = [{ "arg" = "extra_args", "default" = "" }], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+configure-release = { cmd = [ "cmake", "--preset", "conda-macos-release" ], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+# Run the INSTALLED binary, not build/release/bin/FreeCAD. The build-tree binary
+# has both .pixi and build/release/lib on its rpath, so macOS loads two copies of
+# libFreeCADApp -> duplicate App::GeoFeature type IDs -> PartDesign::Body is not
+# recognized as a GeoFeature and PartDesign documents fail to restore. The
+# installed tree loads everything from one prefix, so type registration is sound.
+freecad-debug = { cmd = [ ".pixi/envs/default/bin/FreeCAD" ], depends-on = ["install-debug"]}
+freecad-release = { cmd = [ ".pixi/envs/default/bin/FreeCAD" ], depends-on = ["install-release"]}
+
+[target.win-64.tasks]
+configure-debug = { cmd = [ "cmake", "--preset", "conda-windows-debug", "-DCMAKE_GENERATOR_PLATFORM=", "-DCMAKE_GENERATOR_TOOLSET=", "{{ extra_args }}" ], args = [{ "arg" = "extra_args", "default" = "" }], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+configure-release = { cmd = [ "cmake", "--preset", "conda-windows-release", "-DCMAKE_GENERATOR_PLATFORM=", "-DCMAKE_GENERATOR_TOOLSET=" ], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+freecad-debug = { cmd = [ ".pixi/envs/default/Library/bin/FreeCAD.exe" ], depends-on = ["install-debug"]}
+freecad-release = { cmd = [ ".pixi/envs/default/Library/bin/FreeCAD.exe" ], depends-on = ["install-release"]}
+
+[tasks]
+initialize = { cmd = ["git", "submodule", "update", "--init", "--recursive"]}
+
+# ---------------------------------------------------------------------------
+# The application.  One repo, one build (ADR-030).
+#
+#   pixi run setup && pixi run app
+#
+# Four steps, each runnable on its own:
+#
+#   setup         check out the shell's prebuilt libraries for this platform
+#   build-engine  the headless engine, BUILD_GUI=OFF
+#   stage-engine  stage it into build/engine/cadex-engine-<v>-<os>-<arch>/
+#   build-shell   build the shell, installing that payload into the bundle
+#
+# `build-shell` goes through package/app/build_app.sh rather than calling
+# cmake here, and that is not a stylistic choice: the shell must be
+# configured with the conda environment *off* PATH, or CMake resolves zlib,
+# png, OpenSSL and Python out of .pixi instead of shell/lib. The script
+# scrubs the environment pixi hands it. See its header comment.
+#
+# `stage-engine` stages; `stage-engine-release` relocates. The difference is
+# not a quality setting -- relocation rewrites Mach-O load commands using
+# conda's package manifests, so it only works when the engine's own files are
+# package-managed, i.e. in a rattler build. Against a `cmake --install`ed
+# development environment it fails outright ("the package-managed environment
+# is incomplete"). The staged payload is correct on the machine that built it
+# and nowhere else, which is exactly what `pixi run app` needs and exactly
+# what a release must not ship.
+# ---------------------------------------------------------------------------
+setup = { cmd = ["bash", "package/app/build_app.sh", "setup"]}
+# Setup for an engine-only checkout: the two submodules the engine actually
+# compiles, and nothing else. `setup` above also checks out
+# shell/lib/<platform> -- 1.3 GB over git-lfs -- which a headless box never
+# uses and which hard-fails when git-lfs is not installed. Use this when you
+# want cadexd and no application (ADR-060).
+setup-engine = { cmd = ["git", "submodule", "update", "--init", "--recursive",
+                        "src/3rdParty/OndselSolver", "src/3rdParty/GSL"]}
+build-engine = { depends-on = ["configure-release", "build-release", "install-release"]}
+stage-engine = { cmd = ["bash", "package/engine/build_engine_payload.sh"], env = { CADEX_ENGINE_STAGE_ONLY = "1" }}
+stage-engine-release = { cmd = ["bash", "package/engine/build_engine_payload.sh"]}
+build-shell = { cmd = ["bash", "package/app/build_app.sh", "shell"], depends-on = ["stage-engine"]}
+app = { cmd = ["bash", "package/app/build_app.sh", "launch"], depends-on = ["build-engine", "build-shell"]}
+# Build, then install into /Applications so Cadex opens from Spotlight and the
+# Dock. A *local* install: the staged payload inside the bundle still resolves
+# its libraries out of this repository, so the repo has to stay put. See the
+# comment above cmd_install in package/app/build_app.sh, and "Installing it
+# locally" in docs/cadex-release-packaging.md.
+install-app = { cmd = ["bash", "package/app/build_app.sh", "install"], depends-on = ["build-engine", "build-shell"]}
+uninstall-app = { cmd = ["bash", "package/app/build_app.sh", "uninstall"]}
+# The product gate, against the built bundle, with no MESH_* set.
+gate = { cmd = ["bash", "package/app/build_app.sh", "gate"]}
+# redirect to debug by default
+configure = [{ task = "configure-debug" }]
+build = [{ task = "build-debug" }]
+install = [{ task = "install-debug" }]
+test = [{ task = "test-debug" }]
+freecad = [{ task = "freecad-debug" }]
+
+# The suite this project actually lives on: 1105 tests over src/Mod/cadex/,
+# headless, no build needed (conftest.py stubs FreeCAD). `test` above is the
+# *inherited FreeCAD* ctest, which is a different and much noisier thing --
+# ~160 pre-existing environmental failures, diffed against
+# build/ctest_baseline_failures.txt. Naming both makes which is which
+# obvious at the command line instead of in a doc.
+#
+# A task, not a dependency: ADR-084's pixi.toml prohibition is about
+# CARRIED_PYPI_PACKAGES staying one entry long, and this adds nothing to
+# solve. The 12 skips are the MJX-gated tests and are expected here; to run
+# them, use a venv built from training/requirements.txt.
+test-engine = { cmd = ["python", "-m", "pytest", "src/Mod/cadex/cadex_tests"]}
+
+build-debug = { cmd = ["cmake", "--build", "build/debug"]}
+build-release = { cmd = ["cmake", "--build", "build/release"]}
+install-debug = { cmd = ["cmake", "--install", "build/debug"]}
+install-release = { cmd = ["cmake", "--install", "build/release"]}
+test-debug = { cmd = ["ctest", "--test-dir", "build/debug"]}
+test-release = { cmd = ["ctest", "--test-dir", "build/release"]}
+# Headless project rebuild: re-run THE script into a fresh document and
+# verify the content digest against the accepted one (docs/XSCRIPT.md).
+rebuild = { cmd = [".pixi/envs/default/bin/FreeCADCmd", "-c", "import sys; sys.path.insert(0, 'src/Mod/cadex'); import cadex_rebuild; raise SystemExit(cadex_rebuild.main(['{{ root }}']))"], args = [{ "arg" = "root" }]}
+# cadexd: the headless xscript engine service speaking cadex-cadexd-v1
+# NDJSON over stdio (docs/INTEGRATION.md, ADR-017). One process per project;
+# the shell (or a test harness) owns stdin/stdout.
+cadexd = { cmd = [".pixi/envs/default/bin/FreeCADCmd", "-c", "import sys; sys.path.insert(0, 'src/Mod/cadex'); import cadexd; raise SystemExit(cadexd.main())"]}
+# NOTE: there are deliberately no platform-neutral `freecad-debug` /
+# `freecad-release` definitions here. They used to point at
+# build/{debug,release}/bin/FreeCAD -- exactly the build-tree binary the
+# comment above the osx/win definitions says must never be run, because it
+# carries both .pixi and build/release/lib on its rpath and PartDesign
+# documents then fail to restore. macOS and Windows shadowed them with the
+# installed binary; Linux did not, so `pixi run freecad` there hit the
+# forbidden path. Vestigial upstream definitions, removed rather than fixed:
+# a release build has no FreeCAD binary at all (ADR-022), and the
+# application you launch is the shell.

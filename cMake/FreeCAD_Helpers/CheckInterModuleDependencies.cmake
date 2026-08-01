@@ -1,0 +1,30 @@
+macro(CheckInterModuleDependencies)
+    # ==============================================================================
+    #inter-module dependencies
+
+    # Takes a dependent module followed by a variable-length list of prerequisite
+    # modules.  Warns if any of the prerequisite modules are disabled.
+    function(REQUIRES_MODS dependent)
+        if(${dependent})
+            foreach(prerequisite IN LISTS ARGN)
+                if(NOT ${prerequisite})
+                    message(SEND_ERROR "${dependent} requires ${prerequisite} to be ON, but it"
+                        " is \"${${prerequisite}}\"")
+                    set(${dependent} OFF PARENT_SCOPE)
+                    break()
+                endif(NOT ${prerequisite})
+            endforeach()
+        endif(${dependent})
+    endfunction(REQUIRES_MODS)
+
+    REQUIRES_MODS(BUILD_ASSEMBLY           BUILD_PART BUILD_PART_DESIGN)
+    REQUIRES_MODS(BUILD_IMPORT             BUILD_PART BUILD_PART_DESIGN)
+    REQUIRES_MODS(BUILD_JTREADER           BUILD_MESH)
+    REQUIRES_MODS(BUILD_MESH_PART          BUILD_PART BUILD_MESH)
+    REQUIRES_MODS(BUILD_FLAT_MESH          BUILD_MESH_PART)
+    REQUIRES_MODS(BUILD_MATERIAL_EXTERNAL  BUILD_MATERIAL)
+    REQUIRES_MODS(BUILD_MEASURE            BUILD_PART)
+    REQUIRES_MODS(BUILD_PART               BUILD_MATERIAL)
+    REQUIRES_MODS(BUILD_PART_DESIGN        BUILD_SKETCHER)
+    REQUIRES_MODS(BUILD_SKETCHER           BUILD_PART)
+endmacro(CheckInterModuleDependencies)

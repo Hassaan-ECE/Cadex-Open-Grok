@@ -1,0 +1,101 @@
+# file types to ignore
+.*
+!*.gitattributes
+!*.gitignore
+!/.clang-format
+!/.clang-tidy
+!/.git-blame-ignore-revs
+!/.gitattributes
+!/.github/
+!/.gitignore
+!/.gitmodules
+!/.packit.yaml
+!/.pre-commit-config.yaml
+!/.pylintrc
+!/contrib/.vscode/
+*.clangd
+*.DS_Store
+*.dep
+*.exp
+*.kdev4
+*.lib
+*.manifest
+*.o
+*.obj
+*.orig
+*.output
+*.pch
+*.pyc
+*.vcproj
+# Ignore .db files created by Qt Designer when editing .ui files
+*.db
+*qrc.depends
+*~
+BuildLog.htm
+CMakeCache.txt
+CMakeFiles/
+CMakeLists.txt.user
+Makefile
+cmake_install.cmake
+config.h
+install_manifest.txt
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+/.vscode/
+/ALL_BUILD.dir/
+/Mod/
+/ZERO_CHECK.dir/
+/bin/
+/build-*/
+/build/
+/cmake-build*/
+/conda/environment.yml
+/doc/
+/lib/
+/src/Tools/offlinedoc/*.txt
+/src/Tools/offlinedoc/localwiki/
+/src/Mod/CAM/research/
+/src/3rdParty/Clipper2/Clipper2Lib/include/clipper2/clipper.version.h
+OpenSCAD_rc.py
+tags
+/CMakeUserPresets.json
+Testing
+compile_commands.json
+*.sublime-project
+*.sublime-workspace
+
+# crowdin file
+files_to_translate.txt
+src/Tools/freecad.zip
+tsupdate_stderr.log
+tsupdate_stdout.log
+# pixi environments
+*.egg-info
+.pixi
+goals.md
+#explicitly ignore local env
+.env
+# The remote-training config (ADR-089): a host, a repo path, a venv path and
+# a path to an ssh key. Already ignored by the `.*` rule at the top of this
+# file -- named again here so it stays ignored if that rule is ever loosened,
+# because the allowlist beside it shows the rule is edited.
+training/.remote.env
+build/engine/
+
+# the CLI's default project root, so `./cadex -p ...` run without --project
+# in a checkout leaves a project rather than a diff (docs/CLI.md)
+.cadex/
+
+# the shell's build trees (its GNUmakefile picks the name per platform)
+/shell/build_darwin/
+/shell/build_linux/
+/shell/build_windows/
+/shell/build_darwin_*/
+/shell/build_linux_*/
+/shell/build_windows_*/
+
+# MuJoCo writes its warning log into the process working directory, so a
+# dynamics test that deliberately diverges leaves one in the repo root. It
+# is a runtime artifact, never a source file (M4).
+MUJOCO_LOG.TXT

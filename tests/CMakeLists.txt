@@ -1,0 +1,203 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+if(WIN32)
+    add_definitions(-DCOIN_DLL)
+endif(WIN32)
+
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+set(CMAKE_AUTOMOC ON)
+
+function(setup_qt_test)
+    foreach(_testname ${ARGN})
+        add_executable(${_testname}_Tests_run ${_testname}.cpp)
+        add_test(NAME ${_testname}_Tests_run COMMAND ${_testname}_Tests_run)
+
+        if(NOT BUILD_DYNAMIC_LINK_PYTHON)
+            list(APPEND ${_testname}_LIBS
+                ${Python3_LIBRARIES}
+            )
+        endif()
+
+        target_include_directories(${_testname}_Tests_run PUBLIC
+            SYSTEM
+            ${QtTest_INCLUDE_DIRS})
+        target_link_libraries(${_testname}_Tests_run
+            FreeCADApp
+            FreeCADGui
+            ${QtTest_LIBRARIES}
+            ${${_testname}_LIBS})
+
+        if(WIN32)
+            set_target_properties(${_testname}_Tests_run PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+            set_tests_properties(${_testname}_Tests_run PROPERTIES
+                LABELS "Qt"
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+                ENVIRONMENT_MODIFICATION "${_test_env_mod}")
+        else()
+            set_target_properties(${_testname}_Tests_run PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+            set_tests_properties(${_testname}_Tests_run PROPERTIES
+                LABELS "Qt"
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
+    endforeach()
+endfunction()
+
+set(TestExecutables
+    App_tests_run
+    Base_tests_run
+    Zipios_tests_run
+)
+
+# NOTE: The following tests don't yet run on Windows because they can't find the *.pyd files needed by each FreeCAD
+# module.
+
+if(BUILD_GUI)
+    list (APPEND TestExecutables Gui_tests_run)
+endif()
+if(BUILD_ASSEMBLY)
+    list (APPEND TestExecutables Assembly_tests_run)
+endif(BUILD_ASSEMBLY)
+if(BUILD_MATERIAL)
+    list (APPEND TestExecutables Material_tests_run)
+endif(BUILD_MATERIAL)
+if(BUILD_MEASURE)
+    list (APPEND TestExecutables Measure_tests_run)
+endif(BUILD_MEASURE)
+if(BUILD_MESH)
+    list (APPEND TestExecutables Mesh_tests_run)
+endif(BUILD_MESH)
+if(BUILD_MESH_PART)
+    list (APPEND TestExecutables MeshPart_tests_run)
+endif(BUILD_MESH_PART)
+if(BUILD_PART)
+    list (APPEND TestExecutables Part_tests_run)
+endif(BUILD_PART)
+if(BUILD_PART_DESIGN)
+    list (APPEND TestExecutables PartDesign_tests_run)
+endif(BUILD_PART_DESIGN)
+if(BUILD_SKETCHER)
+    list (APPEND TestExecutables Sketcher_tests_run)
+endif(BUILD_SKETCHER)
+if(BUILD_START)
+    list (APPEND TestExecutables Start_tests_run)
+endif()
+
+# -------------------------
+
+# On Windows, DLLs must be on PATH for test executables to load them.
+# Third-party DLLs live in conda/pixi Library/bin, FreeCAD core DLLs in bin/,
+# and module DLLs (.pyd) in Mod/*/ subdirectories.
+if(WIN32)
+    set(_test_env_mod "PATH=path_list_prepend:${CMAKE_BINARY_DIR}/bin")
+    cmake_path(GET CMAKE_PREFIX_PATH PARENT_PATH _conda_prefix)
+    if(EXISTS "${_conda_prefix}/Library/bin")
+        list(APPEND _test_env_mod "PATH=path_list_prepend:${_conda_prefix}/Library/bin")
+    elseif(EXISTS "${CMAKE_PREFIX_PATH}/bin")
+        list(APPEND _test_env_mod "PATH=path_list_prepend:${CMAKE_PREFIX_PATH}/bin")
+    endif()
+    file(GLOB _mod_dirs LIST_DIRECTORIES true "${CMAKE_BINARY_DIR}/Mod/*")
+    foreach(_mod_dir ${_mod_dirs})
+        if(IS_DIRECTORY "${_mod_dir}")
+            list(APPEND _test_env_mod "PATH=path_list_prepend:${_mod_dir}")
+        endif()
+    endforeach()
+endif()
+
+add_subdirectory(src)
+
+include(GoogleTest)
+set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+
+foreach (exe ${TestExecutables})
+    if(WIN32)
+        if(CMAKE_CONFIGURATION_TYPES)
+            set(OUTPUT_DIR ${CMAKE_BINARY_DIR}/bin)
+            foreach(OUTPUT_CONFIG Debug Release RelWithDebInfo MinSizeRel)
+                string(TOUPPER "${OUTPUT_CONFIG}" UPPER_CONFIG)
+                set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${UPPER_CONFIG} ${OUTPUT_DIR}/${OUTPUT_CONFIG})
+            endforeach()
+        else()
+            set_target_properties(${exe} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+            set_target_properties(${exe} PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+        endif()
+        # gtest_discover_tests requires running the exe to list tests, which fails on Windows
+        # because third-party DLLs are not on PATH during CMake script execution. Register each
+        # test executable as a single ctest entry instead.
+        add_test(NAME ${exe} COMMAND ${exe})
+        set_tests_properties(${exe} PROPERTIES
+            ENVIRONMENT_MODIFICATION "${_test_env_mod}")
+    else()
+        set_target_properties(${exe} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+        gtest_discover_tests(${exe})
+    endif()
+endforeach()
+
+# Cadex Phase 2 digest CI (docs/ROADMAP.md): create -> accept -> delete
+# document -> headless rebuild from script.py -> content digests match.
+# The pytest module skips itself when no FreeCADCmd binary is available.
+add_test(
+    NAME CadexProjectRebuildDigest
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+            ${CMAKE_SOURCE_DIR}/src/Mod/cadex/cadex_tests/test_project_rebuild.py
+)
+set_tests_properties(CadexProjectRebuildDigest PROPERTIES TIMEOUT 900)
+
+# Cadex Phase 5 cadexd CI (docs/ROADMAP.md): drive a real cadexd child over
+# the cadex-cadexd-v1 stdio protocol — open/write/set_params/inspect/
+# resolve_pin, kill -9 + respawn restore-digest equality, mid-run cancel.
+# The pytest module skips itself when no FreeCADCmd binary is available.
+add_test(
+    NAME CadexdLifecycle
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+            ${CMAKE_SOURCE_DIR}/src/Mod/cadex/cadex_tests/test_cadexd_lifecycle.py
+)
+set_tests_properties(CadexdLifecycle PROPERTIES TIMEOUT 900)
+
+# Cadex Phase 9 kernel-ordering CI (docs/ROADMAP.md, ADR-025): five xscript
+# ops take 1-based TopExp::MapShapes ordinals as *saved script arguments*,
+# and BOPAlgo's ordering is not a documented OCCT contract. This pins the
+# enumeration of a canonical box -> cut x4 -> fillet against a recorded
+# fingerprint, so a dependency bump that silently re-indexes every saved
+# script fails here instead of at a user. Also asserts occt is pinned
+# exactly rather than to a range.
+# The pytest module skips itself when no FreeCADCmd binary is available.
+add_test(
+    NAME CadexSubshapeEnumeration
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+            ${CMAKE_SOURCE_DIR}/src/Mod/cadex/cadex_tests/test_subshape_enumeration.py
+)
+set_tests_properties(CadexSubshapeEnumeration PROPERTIES TIMEOUT 900)
+
+# Cadex Phase 9 protocol-response CI (docs/ROADMAP.md, ADR-025): the golden
+# per-op response shapes the Blender shell is written against. Pure Python,
+# no FreeCAD required.
+add_test(
+    NAME CadexResponseSchemas
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+            ${CMAKE_SOURCE_DIR}/src/Mod/cadex/cadex_tests/test_response_schemas.py
+)
+set_tests_properties(CadexResponseSchemas PROPERTIES TIMEOUT 300)
+
+# Cadex Phase 7 packaging CI (docs/ROADMAP.md, ADR-023): build the engine
+# payload and drive the SAME cadexd lifecycle test against the packaged
+# tree, discovered through its cadex-engine.json manifest exactly as the
+# Blender shell discovers it. Strictly stronger than the launcher smoke it
+# replaces, which only ran `freecadcmd --version`.
+#
+# Opt-in: the payload takes minutes to relocate, so the test is only
+# registered when CADEX_ENGINE_ROOT names an already-built payload.
+if(DEFINED ENV{CADEX_ENGINE_ROOT})
+    add_test(
+        NAME CadexEnginePayloadSmoke
+        COMMAND ${Python3_EXECUTABLE} -m pytest -q
+                ${CMAKE_SOURCE_DIR}/src/Mod/cadex/cadex_tests/test_cadexd_lifecycle.py
+    )
+    set_tests_properties(CadexEnginePayloadSmoke PROPERTIES
+        TIMEOUT 900
+        ENVIRONMENT "CADEX_ENGINE_ROOT=$ENV{CADEX_ENGINE_ROOT}")
+endif()
