@@ -2224,7 +2224,7 @@ result = {"plate": plate, "arm": arm, "base": base, "swing": swing,
 
 
 def test_a_simulation_plays(root):
-    """The mechanism moves when you press play (ADR-050).
+    """The mechanism moves after an explicit recording bake (ADR-050).
 
     Compares the baked curves against the engine's own trace at three
     frames, through the depsgraph -- not against the F-curve values, which
@@ -2238,7 +2238,7 @@ def test_a_simulation_plays(root):
     scene = bpy.context.scene
     started = time.perf_counter()
     ok, report = run_tool("write_script", {"content": SIMULATION_SCRIPT})
-    bake_seconds = time.perf_counter() - started
+    build_seconds = time.perf_counter() - started
     check(ok, "simulation script accepted ({:s})".format(
         report.splitlines()[0] if report else ""))
     if not ok:
@@ -2248,6 +2248,16 @@ def test_a_simulation_plays(root):
     check(swing is not None, "the driven component hydrated")
     if swing is None:
         return
+
+    check(cadex_animate.SCENE_FLAG not in scene,
+          "accepted simulations do not auto-bake")
+    check(not cadex_animate.fcurves_of(swing),
+          "the hydrated mechanism has no CadexSim curves before Bake recording")
+    started = time.perf_counter()
+    bake = cadex_animate.bake_from_project(scene)
+    bake_seconds = time.perf_counter() - started
+    check(bool(bake.get("baked") or bake.get("unchanged")),
+          "Bake recording discovers and bakes the accepted simulation artifact")
 
     check(swing.rotation_mode == 'QUATERNION',
           "rotation_mode is QUATERNION (the default XYZ ignores the bake)")
@@ -2311,6 +2321,7 @@ def test_a_simulation_plays(root):
     GATE["simulation"] = {
         "frames": len(solved),
         "components": len(trace.get("component_outputs") or []),
+        "build_seconds": round(build_seconds, 3),
         "bake_seconds": round(bake_seconds, 3),
         "keyframes": len(curves) * (keys[0] if keys else 0),
     }

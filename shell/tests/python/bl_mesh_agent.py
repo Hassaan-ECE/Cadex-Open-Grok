@@ -1128,6 +1128,7 @@ class _RecordingLayout:
 
     def operator(self, idname, **kwargs):
         self.drawn.append({"idname": idname, "enabled": self.enabled, **kwargs})
+        return self
 
     def label(self, **kwargs):
         self.drawn.append({"label": kwargs.get("text", "")})
@@ -1284,6 +1285,14 @@ def test_playback_keys_on_time_not_frame_index():
                 for index in range(4)]
     check(len(set(landings)) == 4,
           "four 0.01 s samples land on four distinct fractional frames")
+    frame, finished = cadex_animate.advance_recording_frame(
+        1.0, 0.5, 30.0, 0.25, 31.0)
+    check(abs(frame - 4.75) < 1e-9 and not finished,
+          "0.25x baked playback advances one quarter realtime")
+    frame, finished = cadex_animate.advance_recording_frame(
+        1.0, 0.5, 30.0, 2.0, 31.0)
+    check(abs(frame - 31.0) < 1e-9 and finished,
+          "2x baked playback clamps cleanly at the recording end")
 
 
 def test_playback_reorders_the_quaternion_and_keeps_it_continuous():
@@ -1346,6 +1355,29 @@ def test_playback_skips_the_input_frame():
           "and every playback sample has a time")
 
 
+def test_manual_bake_discovers_the_pinned_trace():
+    from mesh_agent import cadex_animate
+
+    with tempfile.TemporaryDirectory(prefix="cadex-sim-discovery-") as root:
+        relative = os.path.join("script_artifacts", "rev", "attempt-1")
+        outputs = os.path.join(root, relative, "outputs")
+        os.makedirs(outputs)
+        path = os.path.join(outputs, "assembly-simulation-trace.json")
+        with open(path, "wb") as handle:
+            handle.write(b"accepted simulation bytes")
+        manifest = {
+            "accepted_attempt": {"staging": relative},
+            "accepted_contract": [{"name": "sim", "type": "simulation"}],
+        }
+        candidates = cadex_animate.simulation_candidates({}, root, manifest)
+        check(len(candidates) == 1 and candidates[0]["name"] == "sim",
+              "manual Bake maps the pinned trace back to its accepted output")
+        check(candidates and candidates[0]["path"] == os.path.abspath(path),
+              "manual Bake resolves the accepted staging path after reopen")
+        check(candidates and len(candidates[0]["sha"]) == 64,
+              "manual Bake gives fallback artifacts a content digest")
+
+
 
 def test_live_pose_contract_and_controls():
     print("test_live_pose_contract_and_controls")
@@ -1380,8 +1412,74 @@ def test_live_pose_contract_and_controls():
         "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
     }) is None, "Live rejects non-finite poses before matrix_world")
     for idname in ("mesh_agent.live_toggle", "mesh_agent.live_pause",
-                   "mesh_agent.live_reset", "mesh_agent.live_drag"):
+                   "mesh_agent.live_reset", "mesh_agent.live_drag",
+                   "mesh_agent.bake_simulation", "mesh_agent.sim_speed",
+                   "mesh_agent.play_recording"):
         check(_operator_exists(idname), "{:s} is registered".format(idname))
+    check(bpy.context.scene.cadex_auto_bake_simulation is False,
+          "simulation traces do not auto-bake by default")
+    check(abs(bpy.context.scene.cadex_sim_speed - 1.0) < 1e-9,
+          "Live and baked playback share a 1x default speed")
+
+
+def test_settled_hydrate_hot_reloads_live_without_baking():
+    print("test_settled_hydrate_hot_reloads_live_without_baking")
+    from mesh_agent import cadex_animate
+    from mesh_agent import cadex_backend
+    from mesh_agent import cadex_collision
+    from mesh_agent import cadex_hydrate
+    from mesh_agent import cadex_live
+
+    scene = bpy.context.scene
+    root = os.path.join(tempfile.gettempdir(), "cadex-live-hydrate-policy")
+    originals = {
+        "project_root": cadex_backend.project_root,
+        "hydrate_display": cadex_hydrate.hydrate_display,
+        "animate_apply": cadex_animate.apply,
+        "collision_apply": cadex_collision.apply,
+        "is_running": cadex_live.is_running,
+        "reload_from_scene": cadex_live.reload_from_scene,
+    }
+    bake_calls = []
+    reload_calls = []
+    scene.pop(cadex_animate.SCENE_FLAG, None)
+    scene.cadex_auto_bake_simulation = False
+    try:
+        cadex_backend.project_root = lambda _scene: root
+        cadex_hydrate.hydrate_display = (
+            lambda display, revision: {
+                "display": dict(display), "revision": str(revision)
+            }
+        )
+        cadex_animate.apply = lambda payload, scene=None: bake_calls.append(payload)
+        cadex_collision.apply = lambda payload, project_root: {"shown": False}
+        cadex_live.is_running = lambda: True
+        cadex_live.reload_from_scene = lambda live_scene: (
+            reload_calls.append(live_scene) or (True, "reload requested")
+        )
+
+        result = cadex_backend.hydrate({
+            "revision": "live-r2",
+            "display": {"live_model": {"artifact_kind": "assembly_mjcf_xml"}},
+        })
+        check(not bake_calls,
+              "a settled parameter rebuild does not bake while Live is running")
+        check(reload_calls == [scene],
+              "the settled parameter rebuild hot-reloads the running sidecar")
+        check(result.get("simulation", {}).get("manual") is True,
+              "the hydrate result records that baking remains manual")
+        check(result.get("live", {}).get("reloaded") is True,
+              "the hydrate result exposes the Live reload request")
+        check(cadex_backend._state_for(root).accepted.get("revision") == "live-r2",
+              "the accepted artifact set advances before Live discovery")
+    finally:
+        cadex_backend.project_root = originals["project_root"]
+        cadex_hydrate.hydrate_display = originals["hydrate_display"]
+        cadex_animate.apply = originals["animate_apply"]
+        cadex_collision.apply = originals["collision_apply"]
+        cadex_live.is_running = originals["is_running"]
+        cadex_live.reload_from_scene = originals["reload_from_scene"]
+        cadex_backend._states.pop(root, None)
 
 
 def test_live_action_suspend_releases_missing_objects():
@@ -1441,20 +1539,27 @@ def test_the_simulation_panel_polls_on_content_not_geometry():
 
     scene = bpy.context.scene
     original_has_artifacts = cadex_live.has_mjcf_artifacts
+    original_has_simulation = cadex_animate.has_simulation_artifacts
     if cadex_animate.SCENE_FLAG in scene:
         del scene[cadex_animate.SCENE_FLAG]
     try:
         cadex_live.has_mjcf_artifacts = lambda _scene: False
+        cadex_animate.has_simulation_artifacts = lambda _scene: False
         check(not cls.poll(bpy.context),
               "a model with no recording or Live model hides the panel")
         scene[cadex_animate.SCENE_FLAG] = {
             "fps": 30, "frames": 21, "components": 2, "seconds": 1.0}
         check(cls.poll(bpy.context), "a baked recording shows the panel")
         del scene[cadex_animate.SCENE_FLAG]
+        cadex_animate.has_simulation_artifacts = lambda _scene: True
+        check(cls.poll(bpy.context),
+              "an accepted simulation artifact shows the manual Bake panel")
+        cadex_animate.has_simulation_artifacts = lambda _scene: False
         cadex_live.has_mjcf_artifacts = lambda _scene: True
         check(cls.poll(bpy.context), "a published Live MJCF shows the panel")
     finally:
         cadex_live.has_mjcf_artifacts = original_has_artifacts
+        cadex_animate.has_simulation_artifacts = original_has_simulation
         if cadex_animate.SCENE_FLAG in scene:
             del scene[cadex_animate.SCENE_FLAG]
 
@@ -1486,7 +1591,9 @@ def main():
         test_playback_reorders_the_quaternion_and_keeps_it_continuous()
         test_playback_frame_range_covers_the_run()
         test_playback_skips_the_input_frame()
+        test_manual_bake_discovers_the_pinned_trace()
         test_live_pose_contract_and_controls()
+        test_settled_hydrate_hot_reloads_live_without_baking()
         test_live_action_suspend_releases_missing_objects()
         test_the_simulation_panel_polls_on_content_not_geometry()
         if os.environ.get("MESH_AGENT_LIVE"):

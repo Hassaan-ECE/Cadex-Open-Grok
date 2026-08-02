@@ -570,3 +570,19 @@ sequence; it does not make it optional.
 **Open.** macOS codesigning of the embedded engine (hardened-runtime
 entitlements: `freecadcmd` spawns subprocesses and dlopens OCCT) is not yet
 exercised end to end through notarization.
+
+## Live simulation UX
+
+ADR-106 makes the accepted trace an available artifact, not an automatic
+animation side effect. The Simulation panel exposes **Bake recording** and
+discovers that trace from the accepted display contract or pinned staging.
+Its custom Play/Pause path and Cadex Live share one scene speed with 0.25×,
+1×, and 2× controls.
+
+While Live is running, the settled standard `set_params` refine hydrates the
+new geometry and sends the newly accepted MJCF to the existing sidecar. A
+compatible model preserves generalized state; a changed layout resets to the
+`solved` keyframe; a failed candidate leaves the previous model running. The
+panel states `RUNNING` or `PAUSED`, shows speed, and reports `Drag ON (Esc)`
+plus the grabbed `cadex_output` body when applicable. The shell never imports
+MuJoCo.

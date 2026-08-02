@@ -17,6 +17,7 @@ Headers live in `spaces.py`.
 
 import os
 import textwrap
+import time
 
 import bpy
 from bpy.types import Operator, Panel
@@ -34,6 +35,29 @@ PARAMS_SPLIT = 0.3
 # (RGN_TYPE_IS_HEADER_ANY deliberately excludes it, DNA_screen_types.h). That
 # is what retired the fourth screen area ADR-034 documents.
 INPUT_LINES = 3
+
+_recording_player = None
+
+
+def recording_is_playing():
+    return _recording_player is not None and not _recording_player._stop_requested
+
+
+def stop_recording_playback():
+    player = _recording_player
+    if player is not None:
+        player._stop_requested = True
+
+
+def _tag_simulation_redraw():
+    try:
+        windows = bpy.context.window_manager.windows
+    except Exception:
+        return
+    for window in windows:
+        for area in window.screen.areas:
+            if area.type in {'VIEW_3D', 'CADEX_PARAMS'}:
+                area.tag_redraw()
 
 
 class MESH_AGENT_OT_chat_send(Operator):
@@ -417,6 +441,143 @@ class MESH_AGENT_OT_live_toggle(Operator):
         return {'FINISHED'} if ok else {'CANCELLED'}
 
 
+class MESH_AGENT_OT_bake_simulation(Operator):
+    bl_idname = "mesh_agent.bake_simulation"
+    bl_label = "Bake Recording"
+    bl_description = "Bake the accepted simulation artifact into CadexSim F-Curves"
+
+    @classmethod
+    def poll(cls, context):
+        from . import cadex_animate
+        from . import cadex_live
+        return (not cadex_live.is_running()
+                and cadex_animate.has_simulation_artifacts(context.scene))
+
+    def execute(self, context):
+        from . import cadex_animate
+        try:
+            report = cadex_animate.bake_from_project(context.scene)
+        except Exception as error:
+            self.report({'WARNING'}, str(error))
+            return {'CANCELLED'}
+        ok = bool(report.get("baked") or report.get("unchanged"))
+        if ok:
+            if report.get("unchanged"):
+                message = "Recording is already baked from the accepted simulation."
+            else:
+                message = "Baked {:d} frames for {:d} components.".format(
+                    int(report.get("frames") or 0),
+                    int(report.get("components") or 0),
+                )
+            self.report({'INFO'}, message)
+            return {'FINISHED'}
+        self.report({'WARNING'}, str(report.get("message") or "No recording was baked."))
+        return {'CANCELLED'}
+
+
+class MESH_AGENT_OT_sim_speed(Operator):
+    bl_idname = "mesh_agent.sim_speed"
+    bl_label = "Simulation Speed"
+    bl_description = "Use this speed for Live and baked recording playback"
+
+    scale: bpy.props.FloatProperty(default=1.0, min=0.25, max=2.0)
+
+    def execute(self, context):
+        context.scene.cadex_sim_speed = float(self.scale)
+        return {'FINISHED'}
+
+
+class MESH_AGENT_OT_play_recording(Operator):
+    bl_idname = "mesh_agent.play_recording"
+    bl_label = "Play Recording"
+    bl_description = "Play or pause the baked recording at the shared simulation speed"
+
+    _timer = None
+    _stop_requested = False
+
+    @classmethod
+    def poll(cls, context):
+        from . import cadex_animate
+        from . import cadex_live
+        return cadex_animate.SCENE_FLAG in context.scene and not cadex_live.is_running()
+
+    def invoke(self, context, _event):
+        global _recording_player
+        if _recording_player is not None:
+            _recording_player._stop_requested = True
+            return {'FINISHED'}
+        if context.window is None:
+            return {'CANCELLED'}
+        scene = context.scene
+        if scene.frame_current >= scene.frame_end:
+            scene.frame_set(scene.frame_start)
+        self._scene_name = str(scene.name)
+        self._frame = float(scene.frame_current) + float(scene.frame_subframe)
+        self._last_tick = time.perf_counter()
+        self._stop_requested = False
+        self._window_manager = context.window_manager
+        self._timer = context.window_manager.event_timer_add(
+            1.0 / 60.0, window=context.window
+        )
+        context.window_manager.modal_handler_add(self)
+        _recording_player = self
+        _tag_simulation_redraw()
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        return self.invoke(context, None)
+
+    def _finish(self):
+        global _recording_player
+        timer = self._timer
+        self._timer = None
+        if timer is not None:
+            try:
+                self._window_manager.event_timer_remove(timer)
+            except Exception:
+                pass
+        if _recording_player is self:
+            _recording_player = None
+        _tag_simulation_redraw()
+        return {'FINISHED'}
+
+    def modal(self, _context, event):
+        from . import cadex_animate
+
+        if self._stop_requested or event.type in {'ESC', 'SPACE'}:
+            return self._finish()
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        scene = bpy.data.scenes.get(self._scene_name)
+        if scene is None or cadex_animate.SCENE_FLAG not in scene:
+            return self._finish()
+        now = time.perf_counter()
+        elapsed = max(0.0, now - self._last_tick)
+        self._last_tick = now
+        info = dict(scene.get(cadex_animate.SCENE_FLAG) or {})
+        fps = float(info.get("fps") or scene.render.fps or 30)
+        self._frame, finished = cadex_animate.advance_recording_frame(
+            self._frame,
+            elapsed,
+            fps,
+            float(scene.cadex_sim_speed),
+            scene.frame_end,
+        )
+        whole = int(self._frame)
+        scene.frame_set(whole, subframe=self._frame - whole)
+        _tag_simulation_redraw()
+        return self._finish() if finished else {'RUNNING_MODAL'}
+
+    def cancel(self, _context):
+        self._finish()
+
+
+def _simulation_speed_updated(scene, _context):
+    from . import cadex_live
+    if cadex_live.is_running():
+        cadex_live.set_realtime(float(scene.cadex_sim_speed))
+
+
 class MESH_AGENT_OT_live_pause(Operator):
     bl_idname = "mesh_agent.live_pause"
     bl_label = "Pause Live"
@@ -475,6 +636,7 @@ class CADEX_PARAMS_PT_simulation(Panel):
         from . import cadex_live
         return (cadex_animate.SCENE_FLAG in context.scene
                 or cadex_live.is_running()
+                or cadex_animate.has_simulation_artifacts(context.scene)
                 or cadex_live.has_mjcf_artifacts(context.scene))
 
     def draw(self, context):
@@ -487,25 +649,50 @@ class CADEX_PARAMS_PT_simulation(Panel):
         live = cadex_live.status(scene)
         active = bool(live.get("active"))
         discovered = {}
+        simulation = {}
         if not active:
             try:
                 discovered = cadex_live.discover_mjcf(scene)
             except Exception as error:
                 discovered = {"path": "", "error": str(error)}
+        try:
+            simulation = cadex_animate.discover_simulation(scene)
+        except Exception as error:
+            simulation = {"path": "", "error": str(error)}
         has_recording = cadex_animate.SCENE_FLAG in scene
-        playing = bool(getattr(context.screen, "is_animation_playing", False))
+        has_simulation = bool(simulation.get("path"))
+        playing = recording_is_playing()
         row = layout.row(align=True)
         row.scale_y = 1.3
+        bake = row.row(align=True)
+        bake.enabled = has_simulation and not active
+        bake.operator(
+            MESH_AGENT_OT_bake_simulation.bl_idname,
+            text="Bake recording",
+            icon='ACTION')
         recording = row.row(align=True)
         recording.enabled = has_recording and not active
         recording.operator(
-            "screen.animation_play",
-            text="Pause recording" if playing else "Play recording",
+            MESH_AGENT_OT_play_recording.bl_idname,
+            text="Pause" if playing else "Play",
             icon='PAUSE' if playing else 'PLAY')
         row.operator(
             MESH_AGENT_OT_live_toggle.bl_idname,
             text="Stop Live" if active else "Live",
             icon='PAUSE' if active else 'PLAY')
+
+        if active or has_recording:
+            speed = layout.row(align=True)
+            speed.label(text="Speed")
+            current_speed = float(scene.cadex_sim_speed)
+            for scale in (0.25, 1.0, 2.0):
+                button = speed.operator(
+                    MESH_AGENT_OT_sim_speed.bl_idname,
+                    text="{:g}×".format(scale),
+                    depress=abs(current_speed - scale) < 0.001,
+                )
+                if button is not None:
+                    button.scale = scale
 
         if active:
             controls = layout.row(align=True)
@@ -518,25 +705,28 @@ class CADEX_PARAMS_PT_simulation(Panel):
                 text="Reset", icon='FILE_REFRESH')
             drag = controls.row(align=True)
             drag.enabled = int(live.get("dynamic_bodies") or 0) > 0
-            drag.operator(
-                "mesh_agent.live_drag",
-                text="Pose links" if live.get("paused") else "Drag Body",
-                icon='HAND')
+            if live.get("drag_mode"):
+                drag.enabled = False
+                drag.label(text="Drag ON (Esc)", icon='HAND')
+            else:
+                drag.operator(
+                    "mesh_agent.live_drag",
+                    text="Pose links" if live.get("paused") else "Drag Body",
+                    icon='HAND')
             status = layout.row()
             status.enabled = False
-            if live.get("paused"):
-                status.label(
-                    text="Paused — Drag/Pose links, then Resume  "
-                    "({:.2f} s, {:d} dynamic)".format(
-                        float(live.get("time_s") or 0.0),
-                        int(live.get("dynamic_bodies") or 0)))
-            else:
-                status.label(
-                    text="Live {:.2f} s  ({:d} bodies, {:d} dynamic)  "
-                    "[Drag stays on until Esc]".format(
-                        float(live.get("time_s") or 0.0),
-                        int(live.get("bodies") or 0),
-                        int(live.get("dynamic_bodies") or 0)))
+            status.label(text="Live {:s} {:.2f}× · t={:.2f} s · {:d} dynamic".format(
+                "PAUSED" if live.get("paused") else "RUNNING",
+                float(live.get("realtime_scale") or scene.cadex_sim_speed),
+                float(live.get("time_s") or 0.0),
+                int(live.get("dynamic_bodies") or 0)))
+            if live.get("drag_mode"):
+                drag_status = layout.row()
+                drag_status.enabled = False
+                grabbed = str(live.get("grab_body") or "")
+                drag_status.label(
+                    text="Drag ON (Esc)" + (" · " + grabbed if grabbed else ""),
+                    icon='HAND')
             model = layout.row()
             model.enabled = False
             model.label(text=os.path.basename(str(live.get("model") or "")))
@@ -547,8 +737,15 @@ class CADEX_PARAMS_PT_simulation(Panel):
             total = max(0, scene.frame_end - scene.frame_start) / fps
             row = layout.row()
             row.enabled = False
-            row.label(text="{:.2f} s of {:.2f} s  ({:d} components)".format(
-                elapsed, total, int(info.get("components") or 0)))
+            row.label(text="Recording {:.2f}× · {:.2f} s of {:.2f} s · {:d} components".format(
+                float(scene.cadex_sim_speed), elapsed, total,
+                int(info.get("components") or 0)))
+
+        notice = str(live.get("notice") or "")
+        if notice:
+            row = layout.row()
+            row.enabled = False
+            row.label(text=first_line(notice), icon='INFO')
 
         error = str(live.get("error") or "")
         if error:
@@ -565,6 +762,18 @@ class CADEX_PARAMS_PT_simulation(Panel):
             else:
                 row.enabled = False
                 row.label(text=first_line(message), icon='INFO')
+
+        simulation_error = str(simulation.get("error") or "")
+        if simulation_error:
+            row = layout.row()
+            row.alert = bool(simulation.get("candidates"))
+            row.enabled = not bool(simulation.get("candidates"))
+            row.label(text=first_line(simulation_error),
+                      icon='ERROR' if simulation.get("candidates") else 'INFO')
+
+        help_row = layout.row()
+        help_row.enabled = False
+        help_row.label(text="Params update Live after settle · Bake is manual")
 
 
 class CADEX_PARAMS_PT_actuators(Panel):
@@ -1093,6 +1302,9 @@ classes = (
     MESH_AGENT_OT_toggle_params,
     MESH_AGENT_OT_toggle_collision,
     MESH_AGENT_OT_live_toggle,
+    MESH_AGENT_OT_bake_simulation,
+    MESH_AGENT_OT_sim_speed,
+    MESH_AGENT_OT_play_recording,
     MESH_AGENT_OT_live_pause,
     MESH_AGENT_OT_live_reset,
     CADEX_PARAMS_PT_collision,
@@ -1136,11 +1348,21 @@ def register():
         default="",
         update=_chat_input_confirmed,
     )
+    bpy.types.Scene.cadex_sim_speed = bpy.props.FloatProperty(
+        name="Simulation speed",
+        description="Playback speed shared by Cadex Live and baked recordings",
+        default=1.0,
+        min=0.25,
+        max=2.0,
+        update=_simulation_speed_updated,
+    )
     for cls in classes:
         bpy.utils.register_class(cls)
 
 
 def unregister():
+    stop_recording_playback()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.cadex_sim_speed
     del bpy.types.WindowManager.mesh_chat_input

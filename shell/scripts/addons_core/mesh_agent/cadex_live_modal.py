@@ -73,6 +73,7 @@ def _make_operator():
             self._depth = 0.0
             context.window.cursor_modal_set('CROSSHAIR')
             context.window_manager.modal_handler_add(self)
+            cadex_live.set_drag_mode(True)
             paused = bool(cadex_live.status().get("paused"))
             if paused:
                 self.report(
@@ -88,6 +89,7 @@ def _make_operator():
 
         def _finish(self, context, cancelled=False):
             self._end_grab()
+            cadex_live.set_drag_mode(False)
             timer = getattr(self, "_timer", None)
             if timer is not None:
                 context.window_manager.event_timer_remove(timer)
@@ -109,6 +111,7 @@ def _make_operator():
             self._previous_world = None
             self._region = None
             self._region_3d = None
+            cadex_live.set_drag_body("")
             if was_dragging:
                 cadex_live.clear_drag()
                 cadex_live.clear_forces()
@@ -152,6 +155,7 @@ def _make_operator():
                 return False
             self._dragging = True
             self._body = body
+            cadex_live.set_drag_body(body)
             self._object = obj
             self._local_attach = obj.matrix_world.inverted_safe() @ location
             self._region = region
@@ -229,6 +233,7 @@ def register():
 
 def unregister():
     global _operator
+    cadex_live.set_drag_mode(False)
     cadex_live.clear_forces()
     if _operator is not None:
         import bpy

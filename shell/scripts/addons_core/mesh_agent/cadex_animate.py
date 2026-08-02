@@ -44,6 +44,7 @@ silent:
 import hashlib
 import json
 import math
+import os
 
 TRACE_SCHEMA = "cadex-assembly-simulation-trace-v1"
 SIMULATION_KIND = "assembly_simulation_json"
@@ -74,6 +75,169 @@ LINEAR = 1
 
 #: location xyz + rotation_quaternion wxyz.
 CHANNELS = (("location", 3), ("rotation_quaternion", 4))
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _absolute_artifact_path(raw, root, staging):
+    paths = [str(raw or "")]
+    if raw and not os.path.isabs(str(raw)):
+        relative = str(raw).replace("\\", "/").split("/")
+        if staging:
+            paths.append(os.path.join(staging, *relative))
+        paths.append(os.path.join(root, *relative))
+    for path in paths:
+        absolute = os.path.abspath(path) if path else ""
+        if absolute and os.path.isfile(absolute):
+            return absolute
+    return ""
+
+
+def simulation_candidates(display_map, project_root, manifest=None):
+    """Accepted simulation outputs with durable path and content digest."""
+
+    from . import cadex_live
+
+    root = os.path.abspath(str(project_root))
+    manifest = manifest if isinstance(manifest, dict) else cadex_live._project_manifest(root)
+    staging = cadex_live.accepted_staging(root, manifest=manifest)
+    found = {}
+    for name, entry in sorted((display_map or {}).items()):
+        entry = entry or {}
+        if str(entry.get("artifact_kind") or "") != SIMULATION_KIND:
+            continue
+        path = _absolute_artifact_path(entry.get("artifact_path"), root, staging)
+        if not path:
+            continue
+        sha = str(entry.get("artifact_sha256") or "") or _file_sha256(path)
+        found[str(name)] = {"name": str(name), "path": path, "sha": sha}
+
+    trace_paths = []
+    if staging:
+        outputs = os.path.join(staging, "outputs")
+        try:
+            filenames = sorted(os.listdir(outputs))
+        except OSError:
+            filenames = []
+        trace_paths = [
+            os.path.abspath(os.path.join(outputs, filename))
+            for filename in filenames
+            if filename.endswith("-simulation-trace.json")
+            and os.path.isfile(os.path.join(outputs, filename))
+        ]
+    if trace_paths:
+        contract_names = [
+            str(item.get("name") or "")
+            for item in manifest.get("accepted_contract") or ()
+            if isinstance(item, dict)
+            and str(item.get("type") or "") == "simulation"
+            and str(item.get("name") or "")
+        ]
+        used_paths = {item["path"] for item in found.values()}
+        remaining_paths = [path for path in trace_paths if path not in used_paths]
+        remaining_names = [name for name in contract_names if name not in found]
+        if len(remaining_paths) == 1 and len(remaining_names) == 1:
+            path = remaining_paths.pop()
+            name = remaining_names.pop()
+            found[name] = {
+                "name": name,
+                "path": path,
+                "sha": _file_sha256(path),
+            }
+        for path in remaining_paths:
+            filename = os.path.basename(path)
+            name = filename[:-len("-simulation-trace.json")]
+            if name in found:
+                continue
+            found[name] = {
+                "name": name,
+                "path": path,
+                "sha": _file_sha256(path),
+            }
+    return [found[name] for name in sorted(found)]
+
+
+def choose_simulation(candidates):
+    candidates = list(candidates or ())
+    if not candidates:
+        return None, "This project has no accepted simulation recording to bake."
+    if len(candidates) > 1:
+        return None, (
+            "This script declares {:d} simulations ({:s}); a scene has one "
+            "timeline, so none was baked. Keep one simulation output per script."
+        ).format(len(candidates), ", ".join(item["name"] for item in candidates))
+    return dict(candidates[0]), ""
+
+
+def discover_simulation(scene):
+    from . import cadex_backend
+    from . import cadex_live
+
+    root = cadex_backend.project_root(scene)
+    accepted = cadex_backend.last_accepted(root)
+    manifest = cadex_live._project_manifest(root)
+    candidates = simulation_candidates(
+        accepted.get("display") or {}, root, manifest=manifest
+    )
+    selected, error = choose_simulation(candidates)
+    return {
+        "root": os.path.abspath(root),
+        "name": str((selected or {}).get("name") or ""),
+        "path": str((selected or {}).get("path") or ""),
+        "sha": str((selected or {}).get("sha") or ""),
+        "revision": str(
+            (manifest.get("accepted_attempt") or {}).get("revision")
+            or accepted.get("revision")
+            or ""
+        ),
+        "error": error,
+        "candidates": candidates,
+    }
+
+
+def has_simulation_artifacts(scene):
+    try:
+        return bool(discover_simulation(scene)["candidates"])
+    except Exception:
+        return False
+
+
+def recording_sha(scene):
+    info = dict(scene.get(SCENE_FLAG) or {})
+    sha = str(info.get("sha") or "")
+    if sha:
+        return sha
+    found = set()
+    for obj in _cadex_objects():
+        animation = getattr(obj, "animation_data", None)
+        action = getattr(animation, "action", None)
+        if action is not None and BAKED_SHA_PROP in action:
+            found.add(str(action.get(BAKED_SHA_PROP) or ""))
+    return found.pop() if len(found) == 1 else ""
+
+
+def payload_simulation_sha(payload, project_root):
+    selected, _error = choose_simulation(
+        simulation_candidates(payload.get("display") or {}, project_root)
+    )
+    return str((selected or {}).get("sha") or "")
+
+
+def advance_recording_frame(frame, elapsed_s, fps, scale, frame_end):
+    """Pure timing helper for the custom baked-recording player."""
+
+    next_frame = float(frame) + max(0.0, float(elapsed_s)) * float(fps) * float(scale)
+    end = float(frame_end)
+    return (end, True) if next_frame >= end else (next_frame, False)
 
 
 # -- the pure half: no bpy, no scene ----------------------------------------
@@ -413,6 +577,21 @@ def _forget(scene):
             del scene[flag]
 
 
+def clear_recording(scene=None, objects=None):
+    """Remove the current baked recording without touching model geometry."""
+
+    import bpy
+
+    scene = scene or bpy.context.scene
+    try:
+        from . import ui
+        ui.stop_recording_playback()
+    except Exception:
+        pass
+    _forget(scene)
+    return {"baked": False, "cleared": _clear(objects or _cadex_objects())}
+
+
 def _bake_object(obj, curves, sha):
     import bpy
     # The default 'XYZ' leaves the quaternion channels inert.
@@ -442,7 +621,7 @@ def _bake_object(obj, curves, sha):
     return keyframes
 
 
-def apply(payload):
+def apply(payload, scene=None):
     """Bake the accepted response's simulation, if it has one.
 
     Returns a report dict. Never raises for the ordinary cases -- a model
@@ -453,31 +632,28 @@ def apply(payload):
     import bpy
     from . import cadex_hydrate
 
+    from . import cadex_backend
+
+    scene = scene or bpy.context.scene
     display_map = payload.get("display") or {}
-    names = _simulation_entries(display_map)
+    candidates = simulation_candidates(
+        display_map, cadex_backend.project_root(scene)
+    )
+    selected, selection_error = choose_simulation(candidates)
     objects = _cadex_objects()
-    scene = bpy.context.scene
 
-    if not names:
-        _forget(scene)
-        return {"baked": False, "cleared": _clear(objects)}
+    if selected is None:
+        report = clear_recording(scene, objects=objects)
+        if candidates:
+            report["message"] = selection_error
+        return report
 
-    if len(names) > 1:
-        # Refused rather than silently picking one: two simulations mean two
-        # timelines, and a scene has one.
-        _forget(scene)
-        return {
-            "baked": False,
-            "cleared": _clear(objects),
-            "message": (
-                "This script declares {:d} simulations ({:s}); a scene has "
-                "one timeline, so none was baked. Keep one simulation "
-                "output per script.".format(len(names), ", ".join(names))
-            ),
-        }
-
-    entry = display_map[names[0]]
-    trace, sha = read_trace(entry["artifact_path"])
+    try:
+        from . import ui
+        ui.stop_recording_playback()
+    except Exception:
+        pass
+    trace, sha = read_trace(selected["path"])
 
     by_output = {}
     for obj in objects:
@@ -519,6 +695,9 @@ def apply(payload):
         "frames": len(solver_frames(frames)),
         "components": len(component_names),
         "seconds": float(parameters.get("end_time_s") or 0.0) - start_s,
+        "sha": sha,
+        "revision": str(payload.get("revision") or ""),
+        "artifact_path": selected["path"],
     }
 
     # Set or dropped on every bake, never left behind: a rollout replaced by
@@ -541,3 +720,22 @@ def apply(payload):
         "frame_end": scene.frame_end,
         "actuators": 0 if table is None else len(table["channels"]),
     }
+
+
+def bake_from_project(scene):
+    """Bake the accepted staging trace without another engine round-trip."""
+
+    discovered = discover_simulation(scene)
+    if not discovered["path"]:
+        return {"baked": False, "message": discovered["error"]}
+    payload = {
+        "revision": discovered["revision"],
+        "display": {
+            discovered["name"]: {
+                "artifact_kind": SIMULATION_KIND,
+                "artifact_path": discovered["path"],
+                "artifact_sha256": discovered["sha"],
+            }
+        },
+    }
+    return apply(payload, scene=scene)

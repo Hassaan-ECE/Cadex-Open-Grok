@@ -6,6 +6,7 @@ already-hydrated component objects on Blender's main thread.
 """
 
 import json
+import hashlib
 import math
 import os
 import queue
@@ -23,6 +24,8 @@ CONNECT_TIMEOUT_SECONDS = 5.0
 _session = None
 _session_lock = threading.RLock()
 _last_error = ""
+drag_mode_active = False
+drag_body_name = ""
 
 
 def pose_to_matrix(pose):
@@ -93,6 +96,17 @@ def _project_manifest(root):
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def accepted_staging(root, manifest=None):
@@ -180,10 +194,15 @@ def discover_mjcf(scene):
         accepted.get("display") or {}, root, manifest=_project_manifest(root)
     )
     name, path, error = choose_mjcf(candidates)
+    entry = (accepted.get("display") or {}).get(name) or {}
+    sha = str(entry.get("artifact_sha256") or "")
+    if path and not sha:
+        sha = _file_sha256(path)
     return {
         "root": os.path.abspath(root),
         "output": name,
         "path": path,
+        "sha": sha,
         "error": error,
         "candidates": candidates,
     }
@@ -214,11 +233,12 @@ def _set_last_error(message):
 
 class LiveSession:
     def __init__(self, scene, root, output, xml_path, process, connection,
-                 suspended_actions):
+                 suspended_actions, model_sha=""):
         self.scene_name = str(scene.name)
         self.root = os.path.abspath(str(root))
         self.output = str(output)
         self.xml_path = os.path.abspath(str(xml_path))
+        self.model_sha = str(model_sha or "")
         self.process = process
         self.connection = connection
         self.suspended_actions = list(suspended_actions or [])
@@ -233,8 +253,12 @@ class LiveSession:
         self.error = ""
         self.time_s = 0.0
         self.paused = False
+        self.realtime_scale = 1.0
         self.bodies = []
         self.dynamic_bodies = []
+        self.notice = ""
+        self.reload_generation = 0
+        self.reload_requests = {}
 
     def alive(self):
         return self.process is not None and self.process.poll() is None
@@ -269,8 +293,38 @@ def _reader(session):
                 elif kind == "state":
                     session.latest_state = dict(message)
                     session.state_sequence += 1
+                    session.realtime_scale = float(
+                        message.get("realtime_scale") or session.realtime_scale
+                    )
+                elif kind == "reloaded":
+                    request_id = int(message.get("request_id") or 0)
+                    request = session.reload_requests.pop(request_id, {})
+                    session.xml_path = os.path.abspath(str(
+                        message.get("model") or request.get("path")
+                        or session.xml_path
+                    ))
+                    session.model_sha = str(
+                        request.get("sha") or session.model_sha
+                    )
+                    session.output = str(
+                        request.get("output") or session.output
+                    )
+                    session.bodies = [
+                        str(name) for name in message.get("bodies") or []
+                    ]
+                    session.dynamic_bodies = [
+                        str(name) for name in message.get("dynamic_bodies") or []
+                    ]
+                    session.time_s = float(message.get("t") or session.time_s)
+                    session.notice = str(message.get("message") or "Live model reloaded.")
+                    session.error = ""
                 elif kind == "error":
+                    request_id = int(message.get("request_id") or 0)
+                    if request_id:
+                        session.reload_requests.pop(request_id, None)
                     session.error = str(message.get("message") or "Live sidecar error")
+                    if request_id:
+                        session.notice = "Live kept the previous model after reload failed."
     except OSError as error:
         with session.lock:
             if session.alive():
@@ -382,8 +436,10 @@ def start(scene, xml_path=None):
     global _session
     from . import cadex_animate
     from . import cadexd_client
+    from . import ui
 
     stop(restore=True)
+    ui.stop_recording_playback()
     discovered = discover_mjcf(scene)
     if xml_path:
         discovered["path"] = os.path.abspath(str(xml_path))
@@ -439,6 +495,7 @@ def start(scene, xml_path=None):
             process,
             connection,
             suspended,
+            model_sha=discovered.get("sha") or "",
         )
         threading.Thread(
             target=_reader, args=(session,), name="cadex-live-reader", daemon=True
@@ -466,6 +523,7 @@ def start(scene, xml_path=None):
     with _session_lock:
         _session = session
     _set_last_error("")
+    set_realtime(_scene_speed(scene))
     _register_pump()
     _tag_redraw()
     return True, "Live started from {:s}.".format(
@@ -501,6 +559,8 @@ def stop(restore=True):
     global _session
     from . import cadex_animate
 
+    set_drag_mode(False)
+
     with _session_lock:
         session = _session
         _session = None
@@ -531,6 +591,122 @@ def stop(restore=True):
         cadex_animate.discard_after_live(session.suspended_actions)
     _tag_redraw()
     return "Live stopped."
+
+
+def _scene_speed(scene):
+    try:
+        scale = float(getattr(scene, "cadex_sim_speed", 1.0))
+    except (TypeError, ValueError):
+        scale = 1.0
+    return min(4.0, max(0.05, scale)) if math.isfinite(scale) else 1.0
+
+
+def set_realtime(scale):
+    session = get_session()
+    if session is None or not session.alive():
+        return False, "Live is not running."
+    try:
+        scale = float(scale)
+    except (TypeError, ValueError):
+        return False, "Live speed must be a number."
+    if not math.isfinite(scale) or not 0.05 <= scale <= 4.0:
+        return False, "Live speed must be between 0.05× and 4×."
+    try:
+        session.send({"type": "set_realtime", "scale": scale})
+    except OSError as error:
+        return False, "Could not update Live speed: {!s}".format(error)
+    with session.lock:
+        session.realtime_scale = scale
+        session.notice = "Live speed set to {:.2f}×.".format(scale)
+    _tag_redraw()
+    return True, "Live speed set to {:.2f}×.".format(scale)
+
+
+def reload(scene, xml_path=None, output="", model_sha="", preserve_state=True):
+    """Ask the running sidecar to hot-swap MJCF without stopping Live."""
+
+    session = get_session()
+    if session is None or not session.alive():
+        return False, "Live is not running."
+    discovered = None
+    if not xml_path:
+        discovered = discover_mjcf(scene)
+        xml_path = discovered.get("path") or ""
+        output = discovered.get("output") or ""
+        model_sha = discovered.get("sha") or ""
+    path = os.path.abspath(str(xml_path or ""))
+    if not path or not os.path.isfile(path):
+        return False, "Live rebuild included no usable live_model MJCF."
+    try:
+        from . import cadex_backend
+        current_root = os.path.abspath(cadex_backend.project_root(scene))
+    except Exception as error:
+        return False, "Could not identify the Live project: {!s}".format(error)
+    if current_root != session.root:
+        return False, "Live belongs to a different project and was not reloaded."
+    sha = str(model_sha or "") or _file_sha256(path)
+    with session.lock:
+        if sha and session.model_sha and sha == session.model_sha:
+            session.notice = "Live model is unchanged after rebuild."
+            return True, session.notice
+        session.reload_generation += 1
+        request_id = session.reload_generation
+        session.reload_requests[request_id] = {
+            "path": path,
+            "output": str(output or session.output),
+            "sha": sha,
+        }
+        session.notice = "Reloading Live model after parameter update…"
+    try:
+        session.send({
+            "type": "reload",
+            "xml": path,
+            "preserve_state": bool(preserve_state),
+            "request_id": request_id,
+        })
+    except OSError as error:
+        with session.lock:
+            session.reload_requests.pop(request_id, None)
+            session.error = "Could not reload Live: {!s}".format(error)
+            session.notice = "Live kept the previous model after reload failed."
+        _tag_redraw()
+        return False, session.error
+    _tag_redraw()
+    return True, "Live model reload requested."
+
+
+def reload_from_scene(scene):
+    discovered = discover_mjcf(scene)
+    if not discovered["path"]:
+        session = get_session()
+        message = "Live kept the previous model; rebuild included no live_model MJCF."
+        if session is not None:
+            with session.lock:
+                session.notice = message
+        _tag_redraw()
+        return False, message
+    return reload(
+        scene,
+        discovered["path"],
+        output=discovered["output"],
+        model_sha=discovered["sha"],
+        preserve_state=True,
+    )
+
+
+def invalidate_recording(scene):
+    """Drop a stale baked recording while keeping the Live sidecar running."""
+
+    from . import cadex_animate
+
+    session = get_session()
+    records = []
+    if session is not None:
+        with session.lock:
+            records = list(session.suspended_actions)
+            session.suspended_actions = []
+    cadex_animate.discard_after_live(records)
+    return cadex_animate.clear_recording(scene)
 
 
 def set_paused(paused):
@@ -632,6 +808,19 @@ def can_drag(body=None):
     return str(body) in session.dynamic_bodies
 
 
+def set_drag_mode(active, body=""):
+    global drag_mode_active, drag_body_name
+    drag_mode_active = bool(active)
+    drag_body_name = str(body or "") if drag_mode_active else ""
+    _tag_redraw()
+
+
+def set_drag_body(body=""):
+    global drag_body_name
+    drag_body_name = str(body or "") if drag_mode_active else ""
+    _tag_redraw()
+
+
 def status(scene=None):
     session = get_session()
     if session is None:
@@ -639,24 +828,32 @@ def status(scene=None):
             "active": False,
             "alive": False,
             "paused": False,
+            "realtime_scale": _scene_speed(scene) if scene is not None else 1.0,
             "time_s": 0.0,
             "bodies": 0,
             "dynamic_bodies": 0,
             "output": "",
             "model": "",
             "error": last_error(),
+            "notice": "",
+            "drag_mode": bool(drag_mode_active),
+            "grab_body": str(drag_body_name),
         }
     with session.lock:
         return {
             "active": True,
             "alive": session.alive(),
             "paused": bool(session.paused),
+            "realtime_scale": float(session.realtime_scale),
             "time_s": float(session.time_s),
             "bodies": len(session.bodies),
             "dynamic_bodies": len(session.dynamic_bodies),
             "output": session.output,
             "model": session.xml_path,
             "error": session.error,
+            "notice": session.notice,
+            "drag_mode": bool(drag_mode_active),
+            "grab_body": str(drag_body_name),
         }
 
 
@@ -704,6 +901,9 @@ def _pump():
             session.applied_sequence = sequence
             session.time_s = float(state.get("t") or 0.0)
             session.paused = bool(state.get("paused"))
+            session.realtime_scale = float(
+                state.get("realtime_scale") or session.realtime_scale
+            )
         _tag_redraw()
     return 1.0 / DISPLAY_HZ
 

@@ -10287,3 +10287,28 @@ shown instead of silently choosing. The offline trace remains the durable,
 saveable evidence. Live state is intentionally ephemeral and is not baked or
 stored in the `.blend` unless a later recording feature does so explicitly.
 
+## ADR-106 - Live reloads; recordings bake only on request (2026-08-02)
+
+**Status:** accepted. **Scope:** simulation hydration policy, Simulation panel
+playback controls, Live MJCF reload, and mechanism authoring guidance.
+
+**Decision.** Accepting a simulation trace no longer creates `CadexSim`
+F-Curves by default. The Simulation panel discovers the pinned accepted trace
+and exposes **Bake recording**. SHA-tagged curves are cleared when the accepted
+simulation changes. A hidden opt-in auto-bake flag remains for compatibility,
+but defaults off.
+
+One scene speed drives both Cadex Live and baked playback, with 0.25x, 1x, and
+2x controls.
+
+A settled `set_params` while Live is running sends a digest-aware MJCF reload
+to the existing sidecar. The candidate model loads before replacement. Matching
+`nq` and `nv` preserve `qpos`, `qvel`, compatible controls, and time; a changed
+layout resets to keyframe `solved`; a load error leaves the previous model and
+state running. The shell still never imports MuJoCo.
+
+The panel distinguishes `RUNNING` from `PAUSED`, reports speed, and displays
+`Drag ON (Esc)` plus the grabbed body when applicable. Agent guidance requires
+explicit damping on every moving revolute and reuses the same `joint_dynamics`
+list for dynamics traces and MJCF.
+

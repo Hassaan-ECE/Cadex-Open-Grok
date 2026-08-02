@@ -95,53 +95,122 @@ class LiveStepper:
         if not math.isfinite(self.display_hz) or self.display_hz <= 0.0:
             raise ValueError("display_hz must be positive")
         self.display_interval_s = 1.0 / self.display_hz
-        self.model = mujoco.MjModel.from_xml_path(self.xml_path)
-        self.data = mujoco.MjData(self.model)
-        self.keyframe_id = int(
-            mujoco.mj_name2id(
-                self.model, mujoco.mjtObj.mjOBJ_KEY, "solved"
-            )
-        )
-        if self.keyframe_id < 0:
-            raise ValueError("MJCF has no keyframe named 'solved'")
-
-        self.body_ids: dict[str, int] = {}
-        self.dynamic_bodies: list[str] = []
-        for body_id in range(1, int(self.model.nbody)):
-            name = mujoco.mj_id2name(
-                self.model, mujoco.mjtObj.mjOBJ_BODY, body_id
-            )
-            if not name:
-                continue
-            clean = str(name)
-            self.body_ids[clean] = body_id
-            if int(self.model.body_dofnum[body_id]) > 0:
-                self.dynamic_bodies.append(clean)
-
         self.paused = False
         self.realtime_scale = 1.0
         self._accumulator_s = 0.0
         self._forces: dict[str, dict[str, Any]] = {}
         # Cursor spring evaluated each substep from true body state (no UI lag).
         self._drag: dict[str, Any] | None = None
+        self._pending_message: dict[str, Any] | None = None
+        (self.model, self.data, self.keyframe_id,
+         self.body_ids, self.dynamic_bodies) = self._load_model(self.xml_path)
         self.reset()
+
+    def _load_model(self, xml_path: str):
+        path = str(xml_path)
+        model = self.mujoco.MjModel.from_xml_path(path)
+        data = self.mujoco.MjData(model)
+        keyframe_id = int(
+            self.mujoco.mj_name2id(
+                model, self.mujoco.mjtObj.mjOBJ_KEY, "solved"
+            )
+        )
+        if keyframe_id < 0:
+            raise ValueError("MJCF has no keyframe named 'solved'")
+        body_ids: dict[str, int] = {}
+        dynamic_bodies: list[str] = []
+        for body_id in range(1, int(model.nbody)):
+            name = self.mujoco.mj_id2name(
+                model, self.mujoco.mjtObj.mjOBJ_BODY, body_id
+            )
+            if not name:
+                continue
+            clean = str(name)
+            body_ids[clean] = body_id
+            if int(model.body_dofnum[body_id]) > 0:
+                dynamic_bodies.append(clean)
+        return model, data, keyframe_id, body_ids, dynamic_bodies
+
+    def _reset_data(self, model, data, keyframe_id: int) -> None:
+        self.mujoco.mj_resetDataKeyframe(model, data, keyframe_id)
+        if int(model.nu):
+            data.ctrl[:] = 0.0
+        data.qfrc_applied[:] = 0.0
+        data.xfrc_applied[:] = 0.0
+        self.mujoco.mj_forward(model, data)
 
     @property
     def bodies(self) -> list[str]:
         return list(self.body_ids)
 
     def reset(self) -> None:
-        self.mujoco.mj_resetDataKeyframe(
-            self.model, self.data, self.keyframe_id
-        )
-        if int(self.model.nu):
-            self.data.ctrl[:] = 0.0
-        self.data.qfrc_applied[:] = 0.0
-        self.data.xfrc_applied[:] = 0.0
+        self._reset_data(self.model, self.data, self.keyframe_id)
         self._forces.clear()
         self._drag = None
         self._accumulator_s = 0.0
-        self.mujoco.mj_forward(self.model, self.data)
+
+    def reload_xml(
+        self,
+        xml_path: str,
+        preserve_state: bool = True,
+        request_id: int = 0,
+    ) -> dict[str, Any]:
+        """Atomically load MJCF and preserve generalized state when compatible."""
+
+        path = str(xml_path)
+        old_qpos = [float(value) for value in self.data.qpos]
+        old_qvel = [float(value) for value in self.data.qvel]
+        old_ctrl = [float(value) for value in self.data.ctrl]
+        old_time = float(self.data.time)
+        model, data, keyframe_id, body_ids, dynamic_bodies = self._load_model(path)
+        self._reset_data(model, data, keyframe_id)
+        preserved = bool(
+            preserve_state
+            and int(model.nq) == len(old_qpos)
+            and int(model.nv) == len(old_qvel)
+        )
+        if preserved:
+            if int(model.nq):
+                data.qpos[:] = old_qpos
+            if int(model.nv):
+                data.qvel[:] = old_qvel
+            if int(model.nu) == len(old_ctrl) and int(model.nu):
+                data.ctrl[:] = old_ctrl
+            data.time = old_time
+            self.mujoco.mj_forward(model, data)
+
+        self.xml_path = path
+        self.model = model
+        self.data = data
+        self.keyframe_id = keyframe_id
+        self.body_ids = body_ids
+        self.dynamic_bodies = dynamic_bodies
+        self._forces.clear()
+        self._drag = None
+        self._accumulator_s = 0.0
+        message = (
+            "Live model reloaded; motion preserved."
+            if preserved else
+            "Live model structure changed; reset to the solved keyframe."
+        )
+        return {
+            "schema": SCHEMA,
+            "type": "reloaded",
+            "request_id": int(request_id),
+            "preserved": preserved,
+            "nq": int(model.nq),
+            "nv": int(model.nv),
+            "bodies": self.bodies,
+            "dynamic_bodies": list(self.dynamic_bodies),
+            "model": self.xml_path,
+            "t": float(self.data.time),
+            "message": message,
+        }
+
+    def take_command_message(self) -> dict[str, Any] | None:
+        message = self._pending_message
+        self._pending_message = None
+        return message
 
     def ready_message(self) -> dict[str, Any]:
         return {
@@ -152,6 +221,9 @@ class LiveStepper:
             "timestep_s": float(self.model.opt.timestep),
             "display_hz": self.display_hz,
             "model": self.xml_path,
+            "nq": int(self.model.nq),
+            "nv": int(self.model.nv),
+            "realtime_scale": float(self.realtime_scale),
         }
 
     def state_message(self) -> dict[str, Any]:
@@ -312,6 +384,15 @@ class LiveStepper:
             if not math.isfinite(scale) or not 0.05 <= scale <= 4.0:
                 raise ValueError("realtime scale must be between 0.05 and 4")
             self.realtime_scale = scale
+        elif kind == "reload":
+            xml_path = str(message.get("xml") or "")
+            if not xml_path:
+                raise ValueError("reload requires an MJCF path")
+            self._pending_message = self.reload_xml(
+                xml_path,
+                preserve_state=bool(message.get("preserve_state", True)),
+                request_id=int(message.get("request_id") or 0),
+            )
         elif kind == "set_ctrl":
             values = _finite_vector(message.get("values"), int(self.model.nu), "values")
             if int(self.model.nu):
@@ -468,13 +549,17 @@ def serve(xml_path: str, port: int = 0, display_hz: float = 60.0) -> int:
             for message in messages:
                 try:
                     running = stepper.apply_command(message)
-                except (TypeError, ValueError) as error:
+                    response = stepper.take_command_message()
+                    if response is not None:
+                        _send(connection, response)
+                except Exception as error:
                     _send(
                         connection,
                         {
                             "schema": SCHEMA,
                             "type": "error",
                             "message": str(error),
+                            "request_id": int(message.get("request_id") or 0),
                         },
                     )
                 if not running:

@@ -78,7 +78,7 @@ def hydrate_timings(reset=False):
     return recorded
 
 
-def hydrate(payload, animate=True):
+def hydrate(payload, animate=None):
     """Turn one accepted response into viewport objects. The only entry point.
 
     Three call sites used to reach into ``cadex_hydrate.hydrate_display``
@@ -87,10 +87,9 @@ def hydrate(payload, animate=True):
     anything that has to happen on every accepted revision happens once,
     here, rather than in whichever of the three someone remembered.
 
-    ``animate=False`` skips the simulation bake. Mid-drag responses pass it:
-    a drag re-runs the whole script, simulation included, and re-baking
-    10 000 frames per debounce tick to show a shape change is the wrong
-    trade. The settled refine bakes.
+    ``animate=False`` marks a draft response. Settled responses pass ``None``
+    and use the scene's opt-in auto-bake flag, which defaults off. ``True``
+    remains an explicit force-bake path for compatibility.
 
     A failed bake never costs you the geometry -- hydration has already
     happened and stands on its own, which is why ``cadex_animate`` is a
@@ -100,12 +99,28 @@ def hydrate(payload, animate=True):
     the payload-shaped wrapper over it.
     """
 
-    try:
-        from . import cadex_live
-        if cadex_live.is_running():
-            cadex_live.stop(restore=False)
-    except Exception:
-        traceback.print_exc()
+    import bpy
+    from . import cadex_live
+
+    scene = bpy.context.scene
+    settled = animate is not False
+    live_was_running = cadex_live.is_running()
+    should_bake = (
+        bool(animate)
+        if animate is not None
+        else bool(getattr(scene, "cadex_auto_bake_simulation", False))
+    ) and not live_was_running
+
+    root = project_root(scene)
+    state = _state_for(root)
+    if settled and not should_bake and cadex_animate.SCENE_FLAG in scene:
+        recorded_sha = cadex_animate.recording_sha(scene)
+        accepted_sha = cadex_animate.payload_simulation_sha(payload, root)
+        if not recorded_sha or recorded_sha != accepted_sha:
+            if live_was_running:
+                cadex_live.invalidate_recording(scene)
+            else:
+                cadex_animate.clear_recording(scene)
 
     started = time.perf_counter()
     try:
@@ -113,13 +128,23 @@ def hydrate(payload, animate=True):
             payload.get("display") or {}, payload.get("revision") or "")
     finally:
         _hydrate_seconds.append(time.perf_counter() - started)
-    if animate:
+    if settled:
+        state.accepted = {
+            "display": payload.get("display") or {},
+            "revision": str(payload.get("revision") or ""),
+        }
+    if should_bake:
         try:
-            hydration["simulation"] = cadex_animate.apply(payload)
+            hydration["simulation"] = cadex_animate.apply(payload, scene=scene)
         except Exception:
             hydration["simulation"] = {"baked": False,
                                        "error": traceback.format_exc()}
             traceback.print_exc()
+    elif settled:
+        hydration["simulation"] = {
+            "baked": False,
+            "manual": True,
+        }
 
     # The collision overlay (ADR-091), on the same terms as the bake: a
     # sibling module, wrapped, so a malformed collision record costs the
@@ -131,13 +156,8 @@ def hydrate(payload, animate=True):
     # no wire cage -- this whole feature exists because collision geometry
     # in the wrong place is invisible. Same trade the bake already makes.
     try:
-        import bpy
         from . import cadex_collision
-        root = project_root(bpy.context.scene)
-        if animate:
-            state = _state_for(root)
-            state.accepted = {"display": payload.get("display") or {},
-                              "revision": str(payload.get("revision") or "")}
+        if settled:
             hydration["collision"] = cadex_collision.apply(payload, root)
         elif cadex_collision.enabled():
             cadex_collision.clear()
@@ -146,6 +166,16 @@ def hydrate(payload, animate=True):
         hydration["collision"] = {"shown": False,
                                   "error": traceback.format_exc()}
         traceback.print_exc()
+    if live_was_running and settled:
+        try:
+            ok, report = cadex_live.reload_from_scene(scene)
+            hydration["live"] = {"reloaded": bool(ok), "message": report}
+        except Exception:
+            hydration["live"] = {
+                "reloaded": False,
+                "error": traceback.format_exc(),
+            }
+            traceback.print_exc()
     return hydration
 
 
@@ -887,7 +917,8 @@ class Lifecycle:
             # quality, bakes.
             hydration = hydrate(
                 payload,
-                animate=str(self._display.get("quality") or "") != "draft")
+                animate=(False if str(self._display.get("quality") or "") == "draft"
+                         else None))
         except Exception:
             return False, ("The engine accepted the revision but viewport "
                            "hydration failed:\n" + traceback.format_exc())
@@ -2263,8 +2294,17 @@ def on_file_changed(scene=None):
 
 
 def register():
-    pass
+    import bpy
+    bpy.types.Scene.cadex_auto_bake_simulation = bpy.props.BoolProperty(
+        name="Auto-bake Simulation",
+        description="Bake accepted simulation traces automatically after rebuild",
+        default=False,
+        options={'HIDDEN'},
+    )
 
 
 def unregister():
+    import bpy
     close_all()
+    if hasattr(bpy.types.Scene, "cadex_auto_bake_simulation"):
+        del bpy.types.Scene.cadex_auto_bake_simulation

@@ -70,6 +70,13 @@ The Blender shell imports no MuJoCo code; it only converts SI poses to Cadex
 millimetre matrices and applies them to objects already identified by
 `cadex_output`. Pause, reset, and mouse spring forces travel back over the
 same connection. Baked traces remain the durable recording path.
+Hydration does not bake them automatically: **Bake recording** explicitly
+discovers the accepted trace and writes `CadexSim` F-Curves. The panel's
+0.25×/1×/2× speed is shared by Live and custom baked playback. When a parameter
+slider settles while Live is running, the shell sends the newly accepted MJCF
+to the same sidecar; matching generalized dimensions preserve motion, changed
+dimensions reset to keyframe `solved`, and a rejected reload keeps the previous
+model alive. The shell still imports no MuJoCo code.
 
 **What MuJoCo adds that Ondsel cannot.** Today's simulation is
 *kinematics* — you prescribe motion with `api.motion` formulas of `time`

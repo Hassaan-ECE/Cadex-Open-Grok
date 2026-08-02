@@ -45,20 +45,50 @@ def test_ndjson_protocol_round_trip() -> None:
     assert messages == [{"type": "pause", "schema": live.SCHEMA}]
 
 
-def _write_hinge_model(path: Path) -> None:
+def _write_hinge_model(
+    path: Path,
+    *,
+    solved: float = 0.35,
+    damping: float = 0.0,
+    radius: float = 0.01,
+) -> None:
     path.write_text(
-        """<mujoco model="cadex-live-test">
+        f"""<mujoco model="cadex-live-test">
   <option timestep="0.001" gravity="0 0 -9.81"/>
   <worldbody>
     <body name="base">
       <geom type="sphere" size="0.01" mass="0.1"/>
       <body name="link" pos="0 0 -0.1">
-        <joint name="hinge" type="hinge" axis="0 1 0"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.2" size="0.01" mass="0.1"/>
+        <joint name="hinge" type="hinge" axis="0 1 0" damping="{damping}"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.2" size="{radius}" mass="0.1"/>
       </body>
     </body>
   </worldbody>
-  <keyframe><key name="solved" qpos="0.35"/></keyframe>
+  <keyframe><key name="solved" qpos="{solved}"/></keyframe>
+</mujoco>
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_two_hinge_model(path: Path) -> None:
+    path.write_text(
+        """<mujoco model="cadex-live-two-hinge">
+  <option timestep="0.001" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="base">
+      <geom type="sphere" size="0.01" mass="0.1"/>
+      <body name="link" pos="0 0 -0.1">
+        <joint name="hinge" type="hinge" axis="0 1 0" damping="0.2"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.2" size="0.012" mass="0.1"/>
+        <body name="tip" pos="0 0 -0.2">
+          <joint name="tip-hinge" type="hinge" axis="1 0 0" damping="0.1"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.1" size="0.008" mass="0.05"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <keyframe><key name="solved" qpos="0.1 -0.2"/></keyframe>
 </mujoco>
 """,
         encoding="utf-8",
@@ -91,6 +121,11 @@ def test_stepper_loads_solved_keyframe_and_handles_controls(tmp_path: Path) -> N
     stepper.step_display_interval()
     assert stepper.state_message()["t"] == pytest.approx(paused_at)
     assert stepper.apply_command({"type": "resume"}) is True
+    for scale in (0.25, 1.0, 2.0):
+        assert stepper.apply_command({
+            "type": "set_realtime", "scale": scale
+        }) is True
+        assert stepper.state_message()["realtime_scale"] == pytest.approx(scale)
     assert stepper.apply_command({
         "type": "apply_force",
         "body": "link",
@@ -104,6 +139,59 @@ def test_stepper_loads_solved_keyframe_and_handles_controls(tmp_path: Path) -> N
     assert stepper.apply_command({"type": "clear_forces"}) is True
     assert stepper.apply_command({"type": "reset"}) is True
     assert stepper.state_message()["t"] == pytest.approx(0.0)
+
+
+def test_reload_preserves_compatible_state_and_resets_new_layout(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("mujoco")
+    model_path = tmp_path / "reload.xml"
+    _write_hinge_model(model_path)
+    stepper = live.LiveStepper(str(model_path), display_hz=50.0)
+
+    stepper.data.qpos[:] = [0.77]
+    stepper.data.qvel[:] = [0.12]
+    stepper.data.time = 1.25
+    stepper.mujoco.mj_forward(stepper.model, stepper.data)
+    _write_hinge_model(model_path, solved=-0.4, damping=0.3, radius=0.014)
+
+    assert stepper.apply_command({
+        "type": "reload",
+        "xml": str(model_path),
+        "preserve_state": True,
+        "request_id": 17,
+    }) is True
+    response = stepper.take_command_message()
+    assert response is not None
+    assert response["type"] == "reloaded"
+    assert response["request_id"] == 17
+    assert response["preserved"] is True
+    assert list(stepper.data.qpos) == pytest.approx([0.77])
+    assert list(stepper.data.qvel) == pytest.approx([0.12])
+    assert stepper.data.time == pytest.approx(1.25)
+    assert float(stepper.model.dof_damping[0]) == pytest.approx(0.3)
+
+    _write_two_hinge_model(model_path)
+    assert stepper.apply_command({
+        "type": "reload",
+        "xml": str(model_path),
+        "preserve_state": True,
+        "request_id": 18,
+    }) is True
+    response = stepper.take_command_message()
+    assert response is not None
+    assert response["request_id"] == 18
+    assert response["preserved"] is False
+    assert response["nq"] == 2 and response["nv"] == 2
+    assert list(stepper.data.qpos) == pytest.approx([0.1, -0.2])
+    assert stepper.data.time == pytest.approx(0.0)
+
+    current_path = stepper.xml_path
+    current_qpos = list(stepper.data.qpos)
+    with pytest.raises(Exception):
+        stepper.reload_xml(str(tmp_path / "missing.xml"))
+    assert stepper.xml_path == current_path
+    assert list(stepper.data.qpos) == pytest.approx(current_qpos)
 
 
 def test_paused_force_repositions_then_holds(tmp_path: Path) -> None:
@@ -185,4 +273,3 @@ def test_drag_target_moves_without_exploding(tmp_path: Path) -> None:
     after = stepper.state_message()["placements"]["link"]["rotation_xyzw"]
     assert all(math.isfinite(value) for value in after)
     assert max(abs(a - b) for a, b in zip(before, after)) > 0.02
-

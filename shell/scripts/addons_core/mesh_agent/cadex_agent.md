@@ -33,8 +33,9 @@ tool list unless they ask.
 
 ## Dynamics — fast path (minimize turns)
 
-**Goal:** one successful `write_script` that plays **obvious** motion in
-Params → Simulation → Play recording, or runs interactively with **Live**.
+**Goal:** one successful `write_script` that plays **obvious** motion after
+Params → Simulation → **Bake recording** → Play, or runs interactively with
+**Live**.
 Not a research session.
 
 ### Turn budget
@@ -42,7 +43,7 @@ Not a research session.
 2. At most **1–2** targeted `describe_cad_api` calls
    (`domain="assembly", operation="dynamics"` / `"body"` / `"collision"`)
 3. **One** full `write_script` using a recipe below
-4. `scene_summary` or `inspect_model` once; tell user to **Play** the sim
+4. `scene_summary` or `inspect_model` once; tell user to **Bake + Play** or use Live
 
 **Do not:** dump the whole assembly domain; scale to 50+ free bodies first;
 `restore_version` thrash after `PUBLICATION_UNTAGGED_OBJECT`; ship a model
@@ -80,6 +81,10 @@ same large drop height.
 - Free-body piles: `assembly.solve(asm, require_solved=False)`.
 - Every component → one `assembly.body(..., density_kg_m3=...)`.
 - Contact needs `collision=` (box/sphere/…); no collision ⇒ pass-through.
+- Every moving revolute gets explicit `assembly.joint_dynamics(..., damping...)`
+  unless the user specifically asks for a frictionless joint. Pass the same
+  `joint_dynamics` list to both `assembly.dynamics` and `assembly.mjcf` so the
+  recording and Live model have the same damping.
 - On `PUBLICATION_UNTAGGED_OBJECT` / foreign Joints/Simulations: stop. Ask
   user to close & reopen once, then one clean write. Do not loop restore.
 - `inspect_model` uses published **part/output** names (e.g. `base`, `link1`),
@@ -129,19 +134,29 @@ j = assembly.joint(
 )
 asm = assembly.assembly([base, swing], [j])
 diag = assembly.solve(asm)
+bodies = [assembly.body(base, density_kg_m3=2700),
+          assembly.body(swing, density_kg_m3=7850)]
+joint_dynamics = [assembly.joint_dynamics(
+    j, damping_nmms_per_deg=0.04, label="Hinge damping")]
 sim = assembly.dynamics(
-    asm,
-    [assembly.body(base, density_kg_m3=2700),
-     assembly.body(swing, density_kg_m3=7850)],
+    asm, bodies,
+    joint_dynamics=joint_dynamics,
     end_time_s=1.0, frames_per_second=30,
 )
+live_model = assembly.mjcf(
+    asm, bodies,
+    joint_dynamics=joint_dynamics,
+    gravity_m_s2=[0, 0, -9.81],
+)
 result = {"plate": plate, "arm": arm, "base": base, "swing": swing,
-          "j": j, "asm": asm, "diag": diag, "sim": sim}
+          "j": j, "asm": asm, "diag": diag, "sim": sim,
+          "live_model": live_model}
 ```
 
 ### After success
-Tell the user: **Cadex Chat header → Params → Simulation → Play recording**,
-or **Live** when the script publishes `live_model`.
+Tell the user: **Cadex Chat header → Params → Simulation → Bake recording →
+Play**, or **Live** when the script publishes `live_model`. Slider settles
+hot-reload a running Live model; baking remains an explicit recording action.
 If they asked for a large multi-body scene, only then scale up while keeping
 the same **large drop** and returning every component/joint once in `result`.
 
