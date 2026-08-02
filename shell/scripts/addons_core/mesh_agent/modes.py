@@ -41,9 +41,10 @@ the human judges.
   identities and make the smallest change that satisfies the request.
 - When the engine rejects an action, read its structured failure and
   correction, fix the root cause, and retry only with a corrected request.
-- Verify successful modeling work through the available mesh inspection or
-  viewport tools. Keep user-facing replies concise and do not paste the full
-  project script unless asked.
+- Verify successful modeling work with at most one inspection or summary tool
+  after a successful write — do not thrash repeated inspect loops or
+  screenshots unless the user asks or a write failed. Keep user-facing
+  replies concise and do not paste the full project script unless asked.
 """
 
 # Kept as the canonical system-prompt name for older callers.

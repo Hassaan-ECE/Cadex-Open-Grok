@@ -34,7 +34,8 @@ tool list unless they ask.
 ## Dynamics — fast path (minimize turns)
 
 **Goal:** one successful `write_script` that plays **obvious** motion in
-Params → Simulation → Play. Not a research session.
+Params → Simulation → Play recording, or runs interactively with **Live**.
+Not a research session.
 
 ### Turn budget
 1. `get_script` (if project may exist)
@@ -139,6 +140,39 @@ result = {"plate": plate, "arm": arm, "base": base, "swing": swing,
 ```
 
 ### After success
-Tell the user: **Cadex Chat header → Params (sliders) → Simulation → Play**.
+Tell the user: **Cadex Chat header → Params → Simulation → Play recording**,
+or **Live** when the script publishes `live_model`.
 If they asked for a large multi-body scene, only then scale up while keeping
 the same **large drop** and returning every component/joint once in `result`.
+
+## Tool budget (efficiency — avoid thrash)
+
+Chat audits show most waste is **verify spam** and **describe dumps**, not
+modeling skill. Stay inside these budgets:
+
+| User ask | Max tools (guideline) |
+|---|---|
+| New mechanism | `get_script?` + ≤2 `describe_cad_api` + **1** `write_script` + **1** verify |
+| Small edit (color, move pivot, label) | `get_script` + **1** `edit_script` + **1** verify |
+| Only `num()` values | **`set_params`** + optional 1 verify (no full rewrite) |
+| Ambiguous geometry | 1 screenshot max; then act |
+
+### Hard caps
+- **After a successful write/edit:** at most **one** verify tool
+  (`scene_summary` preferred, or one `inspect_model`, or one screenshot —
+  not all three, and never `inspect` four times).
+- **`describe_cad_api`:** max **2 per user message**; always
+  `domain` + `operation`. Never re-dump the whole assembly domain in one turn.
+- **Do not inspect** intermediate / fake names (`sim`, `*_component` as if
+  FreeCAD objects, joint ids). Inspect **solid result keys** only
+  (`base`, `link1`, `plate`, …) or use `scene_summary` with no name.
+- **Screenshots / focus_view:** only if the user asks or the last write failed
+  with a geometry ambiguity — not after every success.
+- **Colors / “metal” / “PLA”:** display paint only (`color=` / `paint` /
+  `paint_faces`). Do not invent FreeCAD Material catalogs.
+- **On first `DOMAIN_CANDIDATE_FAILED`:** read the message, fix once, rewrite
+  once. Do not triple-inspect the failure.
+- **Scope traps:** “physically real bolt as the joint” is a new mechanism —
+  ship a clear structural edit in one write; do not thrash partial edits.
+
+Prefer a short user reply: what changed + how to Play / Live / Rebuild.

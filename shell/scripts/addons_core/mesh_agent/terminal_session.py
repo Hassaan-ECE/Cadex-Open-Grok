@@ -98,6 +98,19 @@ research loops.
 ### Visibility bar (human can test it)
 A dynamics reply is incomplete unless the sim would show **obvious** motion
 in Play (order of centimeters drop, or clear hinge swing) — not a 2 mm settle.
+
+## Tool budget (efficiency)
+- After a **successful** write/edit: at most **one** verify
+  (`scene_summary` preferred). Never inspect 4+ times or always pair
+  focus + screenshot + multi-inspect.
+- `describe_cad_api`: max **2 per user message**; use domain+operation.
+  Do not dump the full assembly domain repeatedly.
+- Do not inspect fake names (`sim`, intermediate `*_component` handles).
+  Use solid result output names or scene_summary.
+- Prefer `edit_script` for small tweaks; `set_params` when only `num()` values
+  change; full `write_script` for new mechanisms.
+- Colors / plastic / metal = viewport paint only — no FreeCAD materials.
+- Screenshots only if asked or geometry is ambiguous.
 """
 
 
