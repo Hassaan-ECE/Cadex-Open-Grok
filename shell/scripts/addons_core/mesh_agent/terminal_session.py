@@ -83,12 +83,14 @@ research loops.
   **inside** `offset` (list or map). Never top-level `axis=` on connector.
 - Assembly programs need **exactly one** `assembly` + **one**
   `assembly.solve` diagnostics in `result`, plus the dynamics sim when asked.
+- **Return every component and every joint** that you passed into
+  `assembly.assembly([...], [...])` **exactly once** in `result`. Omitting
+  them is a hard reject (even if assembly+solve+sim are present). "Lean"
+  means no *extra* unlisted component/joint outputs, not "skip them".
 - **Every** component needs one `assembly.body` (density required:
   steel ≈ 7850, aluminium ≈ 2700, ABS ≈ 1040).
 - Contact is **opt-in** via `collision=` on bodies. No collision ⇒ pass-through.
 - Free-body piles: `assembly.solve(..., require_solved=False)` is normal.
-- Keep `result` lean (parts + floor + assembly + diagnostics + sim). Do not
-  dump dozens of intermediate component handles unless the user needs them.
 - `PUBLICATION_UNTAGGED_OBJECT` / foreign `Joints`/`Simulations`: **stop
   looping**. Ask the user to close & reopen the project once, then one clean
   `write_script`. Do not spam `restore_version`.

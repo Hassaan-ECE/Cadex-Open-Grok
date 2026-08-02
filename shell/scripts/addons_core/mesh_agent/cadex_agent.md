@@ -64,15 +64,25 @@ same large drop height.
   Put axis/angle/position **inside** `offset` as a list or map, e.g.
   `offset={"position": [x,y,z], "axis": [1,0,0], "angle_degrees": 90}`.
   Never pass top-level `axis=` / `angle_degrees=` on `connector` (TypeError).
-- `result` includes **exactly one** assembly + **one** `assembly.solve(...)`
-  diagnostics + the dynamics output (name it e.g. `sim` / `trace`).
+- **`result` assembly publication (very common reject):**
+  - Exactly **one** `assembly.assembly(...)` and **one** `assembly.solve(...)`
+    diagnostics.
+  - **Every** component passed into that assembly must appear **exactly once**
+    in `result` (as its component value). Missing →
+    `Every component listed in api.assembly must be returned exactly once`.
+  - **Every** joint passed into that assembly must appear **exactly once**
+    in `result`. Missing →
+    `Every joint listed in api.assembly must be returned exactly once`.
+  - Also return solid sources + dynamics/sim when used.
+  - "Lean" means: no *extra* unlisted component_link/joint outputs — **not**
+    "omit the components/joints from result".
 - Free-body piles: `assembly.solve(asm, require_solved=False)`.
 - Every component → one `assembly.body(..., density_kg_m3=...)`.
 - Contact needs `collision=` (box/sphere/…); no collision ⇒ pass-through.
-- Lean `result`: sources + assembly + diagnostics + sim (+ floor). Avoid
-  50 named component handles in `result` unless required.
 - On `PUBLICATION_UNTAGGED_OBJECT` / foreign Joints/Simulations: stop. Ask
   user to close & reopen once, then one clean write. Do not loop restore.
+- `inspect_model` uses published **part/output** names (e.g. `base`, `link1`),
+  not intermediate keys like `sim` or arbitrary FreeCAD internal names.
 
 ### Recipe A — visible free fall (preferred “does physics work?” test)
 
