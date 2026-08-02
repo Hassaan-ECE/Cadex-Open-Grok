@@ -100,6 +100,13 @@ def hydrate(payload, animate=True):
     the payload-shaped wrapper over it.
     """
 
+    try:
+        from . import cadex_live
+        if cadex_live.is_running():
+            cadex_live.stop(restore=False)
+    except Exception:
+        traceback.print_exc()
+
     started = time.perf_counter()
     try:
         hydration = cadex_hydrate.hydrate_display(

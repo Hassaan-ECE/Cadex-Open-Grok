@@ -341,7 +341,8 @@ def test_the_shell_never_learns_about_mujoco() -> None:
                 offenders.append(f"{path.relative_to(shell)} -> {forbidden}")
     assert not offenders, (
         f"The shell reached for the dynamics engine: {offenders}. Physics "
-        "belongs in the script, engine-side; the shell only plays the trace."
+        "belongs engine-side; the shell only plays traces or applies poses "
+        "streamed by an engine sidecar."
     )
 
 

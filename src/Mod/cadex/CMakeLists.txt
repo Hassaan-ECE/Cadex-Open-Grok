@@ -28,6 +28,7 @@ set(Cadex_Scripts
     cadex_assembly_worker.py
     cadex_domain_api.py
     cadex_domain_worker.py
+    cadex_live_stepper.py
     cadex_mesh_api.py
     cadex_mesh_worker.py
     cadex_part_api.py

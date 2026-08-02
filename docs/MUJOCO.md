@@ -1,6 +1,6 @@
 # MUJOCO.md — Dynamics, and the Road to a Trained Policy
 
-Verified against source: 2026-08-01
+Verified against source: 2026-08-02
 Status: **M0 recorded (ADR-075, ADR-076), M1 passed, M2 closed (ADR-077),
 M3 closed (ADR-079), M4 closed (ADR-080), M5 closed (ADR-081), M6 closed
 (ADR-083), M7 closed (ADR-084), M8 closed (ADR-085).** The arc is complete:
@@ -59,6 +59,17 @@ a contract that already exists and is already test-pinned. That is an
 unusually cheap seam, and it is the reason to do this now rather than after
 Phase 11 or 12. The same seam carries the whole arc: a *policy rollout* is
 also just a trace.
+
+### Realtime Live is a second presentation seam
+
+ADR-105 adds an interactive path without changing the offline trace contract.
+The accepted project publishes a stock MJCF artifact with keyframe `solved`.
+A separate process launched with the engine payload's Python imports official
+MuJoCo 3.10, steps continuously, and streams body poses over localhost NDJSON.
+The Blender shell imports no MuJoCo code; it only converts SI poses to Cadex
+millimetre matrices and applies them to objects already identified by
+`cadex_output`. Pause, reset, and mouse spring forces travel back over the
+same connection. Baked traces remain the durable recording path.
 
 **What MuJoCo adds that Ondsel cannot.** Today's simulation is
 *kinematics* — you prescribe motion with `api.motion` formulas of `time`

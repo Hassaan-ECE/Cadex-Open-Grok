@@ -322,6 +322,89 @@ def _clear(objects):
     return removed
 
 
+def suspend_for_live(objects=None):
+    """Detach CadexSim actions while Live owns component transforms."""
+
+    import bpy
+    from . import cadex_hydrate
+
+    if objects is None:
+        objects = _cadex_objects()
+    screen = getattr(bpy.context, "screen", None)
+    if screen is not None and getattr(screen, "is_animation_playing", False):
+        try:
+            bpy.ops.screen.animation_cancel(restore_frame=False)
+        except RuntimeError:
+            pass
+    records = []
+    for obj in objects:
+        animation = obj.animation_data
+        action = animation.action if animation is not None else None
+        if action is None or BAKED_SHA_PROP not in action:
+            continue
+        output = str(obj.get(cadex_hydrate.OUTPUT_PROP) or "")
+        if not output:
+            continue
+        records.append({
+            "output": output,
+            "action": action.name,
+            "fake_user": bool(action.use_fake_user),
+        })
+        action.use_fake_user = True
+        animation.action = None
+    return records
+
+
+def restore_after_live(records):
+    """Restore action bindings detached by :func:`suspend_for_live`."""
+
+    import bpy
+    from . import cadex_hydrate
+
+    collection = cadex_hydrate._model_collection()
+    restored = 0
+    for record in records or ():
+        action = bpy.data.actions.get(str(record.get("action") or ""))
+        if action is None:
+            continue
+        obj = cadex_hydrate._find(
+            collection, str(record.get("output") or ""), edges=False
+        )
+        action.use_fake_user = bool(record.get("fake_user"))
+        if obj is None:
+            if not action.use_fake_user and action.users == 0:
+                bpy.data.actions.remove(action)
+            continue
+        if obj.animation_data is None:
+            obj.animation_data_create()
+        obj.animation_data.action = action
+        restored += 1
+    if restored:
+        scene = bpy.context.scene
+        try:
+            scene.frame_set(scene.frame_current)
+        except RuntimeError:
+            pass
+    return restored
+
+
+def discard_after_live(records):
+    """Release detached actions when the owning model is being replaced."""
+
+    import bpy
+
+    removed = 0
+    for record in records or ():
+        action = bpy.data.actions.get(str(record.get("action") or ""))
+        if action is None:
+            continue
+        action.use_fake_user = bool(record.get("fake_user"))
+        if not action.use_fake_user and action.users == 0:
+            bpy.data.actions.remove(action)
+            removed += 1
+    return removed
+
+
 def _forget(scene):
     """Drop the panels' flags. A model without a simulation shows neither."""
 

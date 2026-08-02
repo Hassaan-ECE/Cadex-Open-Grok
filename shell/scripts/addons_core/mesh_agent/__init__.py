@@ -27,6 +27,8 @@ from bpy.app.handlers import persistent
 
 from . import agent as agent_module
 from . import cadex_backend as cadex_backend_module
+from . import cadex_live as cadex_live_module
+from . import cadex_live_modal as cadex_live_modal_module
 from . import cadex_pick as cadex_pick_module
 from . import cadex_terminal_pick as cadex_terminal_pick_module
 from . import cadex_training as cadex_training_module
@@ -184,6 +186,8 @@ class MeshAgentPreferences(bpy.types.AddonPreferences):
 
 @persistent
 def _save_pre_handler(_filepath):
+    if cadex_live_module.is_running():
+        cadex_live_module.stop(restore=True)
     agent_module.get_agent().save_state()
     # Last moment before the write, and bpy.data.filepath still names the
     # OLD file here, so this is the only point at which a Save-As can record
@@ -275,6 +279,11 @@ def _save_post_handler(_filepath):
 
 
 @persistent
+def _load_pre_handler(_filepath):
+    cadex_live_module.stop(restore=False)
+
+
+@persistent
 def _load_post_handler(_filepath):
     # Stop before adopting the new .blend: the old process must never see the
     # new scene through its still-live MCP bridge.
@@ -359,6 +368,8 @@ def register():
     cadex_pick_module.register()
     cadex_terminal_pick_module.register()
     cadex_training_module.register()
+    cadex_live_module.register()
+    cadex_live_modal_module.register()
     wiring_module.register()
     ui.register()
     # Embedded Open Grok terminal (ConPTY) in CADEX_CHAT.
@@ -376,6 +387,7 @@ def register():
     wiring_ui_module.register()
     bpy.app.handlers.save_pre.append(_save_pre_handler)
     bpy.app.handlers.save_post.append(_save_post_handler)
+    bpy.app.handlers.load_pre.append(_load_pre_handler)
     bpy.app.handlers.load_post.append(_load_post_handler)
     bpy.app.handlers.frame_change_post.append(_frame_change_handler)
 
@@ -385,6 +397,8 @@ def unregister():
         bpy.app.handlers.save_pre.remove(_save_pre_handler)
     if _save_post_handler in bpy.app.handlers.save_post:
         bpy.app.handlers.save_post.remove(_save_post_handler)
+    if _load_pre_handler in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.remove(_load_pre_handler)
     if _load_post_handler in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_load_post_handler)
     if _frame_change_handler in bpy.app.handlers.frame_change_post:
@@ -395,6 +409,8 @@ def unregister():
     terminal_ui.unregister()
     ui.unregister()
     wiring_module.unregister()
+    cadex_live_modal_module.unregister()
+    cadex_live_module.unregister()
     cadex_training_module.unregister()
     cadex_terminal_pick_module.unregister()
     cadex_pick_module.unregister()

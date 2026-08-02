@@ -235,6 +235,32 @@ def resolve_engine(explicit="", bundle_roots=()):
     return freecadcmd, cadexd_module_dir(freecadcmd, bundle_roots)
 
 
+def engine_python(freecadcmd):
+    """Python executable belonging to ``freecadcmd``'s engine tree, or None."""
+    target = os.path.abspath(str(freecadcmd or ""))
+    if not target:
+        return None
+    root = _bundled_payload_root(target)
+    binary_dir = os.path.dirname(target)
+    candidates = []
+    if root is not None:
+        candidates.extend((
+            os.path.join(root, "bin", "python.exe"),
+            os.path.join(root, "python.exe"),
+            os.path.join(root, "bin", "python3"),
+            os.path.join(root, "bin", "python"),
+        ))
+    candidates.extend((
+        os.path.join(binary_dir, "python.exe"),
+        os.path.join(binary_dir, "python3"),
+        os.path.join(binary_dir, "python"),
+    ))
+    for candidate in candidates:
+        if _executable(candidate):
+            return candidate
+    return None
+
+
 def default_command(freecadcmd, module_dir):
     bootstrap = (
         "import sys; sys.path.insert(0, {!r}); "

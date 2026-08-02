@@ -396,6 +396,61 @@ class CADEX_PARAMS_PT_collision(Panel):
                          icon='GHOST_DISABLED')
 
 
+class MESH_AGENT_OT_live_toggle(Operator):
+    bl_idname = "mesh_agent.live_toggle"
+    bl_label = "Live"
+    bl_description = "Start or stop realtime MuJoCo for this project"
+
+    @classmethod
+    def poll(cls, context):
+        from . import cadex_live
+        return cadex_live.is_running() or cadex_live.has_mjcf(context.scene)
+
+    def execute(self, context):
+        from . import cadex_live
+        if cadex_live.is_running():
+            report = cadex_live.stop(restore=True)
+            self.report({'INFO'}, report)
+            return {'FINISHED'}
+        ok, report = cadex_live.start(context.scene)
+        self.report({'INFO'} if ok else {'WARNING'}, report)
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
+class MESH_AGENT_OT_live_pause(Operator):
+    bl_idname = "mesh_agent.live_pause"
+    bl_label = "Pause Live"
+    bl_description = "Pause or resume realtime physics"
+
+    @classmethod
+    def poll(cls, _context):
+        from . import cadex_live
+        return cadex_live.is_running()
+
+    def execute(self, _context):
+        from . import cadex_live
+        ok, report = cadex_live.toggle_pause()
+        self.report({'INFO'} if ok else {'WARNING'}, report)
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
+class MESH_AGENT_OT_live_reset(Operator):
+    bl_idname = "mesh_agent.live_reset"
+    bl_label = "Reset Live"
+    bl_description = "Return realtime physics to the MJCF solved keyframe"
+
+    @classmethod
+    def poll(cls, _context):
+        from . import cadex_live
+        return cadex_live.is_running()
+
+    def execute(self, _context):
+        from . import cadex_live
+        ok, report = cadex_live.reset()
+        self.report({'INFO'} if ok else {'WARNING'}, report)
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
 class CADEX_PARAMS_PT_simulation(Panel):
     """Playback for a model that has a simulation, and nothing otherwise.
 
@@ -417,32 +472,99 @@ class CADEX_PARAMS_PT_simulation(Panel):
     @classmethod
     def poll(cls, context):
         from . import cadex_animate
-        # One custom-property lookup: a model with no simulation sees the
-        # parameters editor exactly as it was.
-        return cadex_animate.SCENE_FLAG in context.scene
+        from . import cadex_live
+        return (cadex_animate.SCENE_FLAG in context.scene
+                or cadex_live.is_running()
+                or cadex_live.has_mjcf_artifacts(context.scene))
 
     def draw(self, context):
         from . import cadex_animate
+        from . import cadex_live
         scene = context.scene
         info = dict(scene.get(cadex_animate.SCENE_FLAG) or {})
         layout = self.layout
 
+        live = cadex_live.status(scene)
+        active = bool(live.get("active"))
+        discovered = {}
+        if not active:
+            try:
+                discovered = cadex_live.discover_mjcf(scene)
+            except Exception as error:
+                discovered = {"path": "", "error": str(error)}
+        has_recording = cadex_animate.SCENE_FLAG in scene
         playing = bool(getattr(context.screen, "is_animation_playing", False))
         row = layout.row(align=True)
         row.scale_y = 1.3
-        row.operator("screen.animation_play",
-                     text="Pause" if playing else "Play",
-                     icon='PAUSE' if playing else 'PLAY')
+        recording = row.row(align=True)
+        recording.enabled = has_recording and not active
+        recording.operator(
+            "screen.animation_play",
+            text="Pause recording" if playing else "Play recording",
+            icon='PAUSE' if playing else 'PLAY')
+        row.operator(
+            MESH_AGENT_OT_live_toggle.bl_idname,
+            text="Stop Live" if active else "Live",
+            icon='PAUSE' if active else 'PLAY')
 
-        layout.prop(scene, "frame_current", text="Frame")
+        if active:
+            controls = layout.row(align=True)
+            controls.operator(
+                MESH_AGENT_OT_live_pause.bl_idname,
+                text="Resume" if live.get("paused") else "Pause",
+                icon='PLAY' if live.get("paused") else 'PAUSE')
+            controls.operator(
+                MESH_AGENT_OT_live_reset.bl_idname,
+                text="Reset", icon='FILE_REFRESH')
+            drag = controls.row(align=True)
+            drag.enabled = int(live.get("dynamic_bodies") or 0) > 0
+            drag.operator(
+                "mesh_agent.live_drag",
+                text="Pose links" if live.get("paused") else "Drag Body",
+                icon='HAND')
+            status = layout.row()
+            status.enabled = False
+            if live.get("paused"):
+                status.label(
+                    text="Paused — Drag/Pose links, then Resume  "
+                    "({:.2f} s, {:d} dynamic)".format(
+                        float(live.get("time_s") or 0.0),
+                        int(live.get("dynamic_bodies") or 0)))
+            else:
+                status.label(
+                    text="Live {:.2f} s  ({:d} bodies, {:d} dynamic)  "
+                    "[Drag stays on until Esc]".format(
+                        float(live.get("time_s") or 0.0),
+                        int(live.get("bodies") or 0),
+                        int(live.get("dynamic_bodies") or 0)))
+            model = layout.row()
+            model.enabled = False
+            model.label(text=os.path.basename(str(live.get("model") or "")))
+        elif has_recording:
+            layout.prop(scene, "frame_current", text="Recording frame")
+            fps = float(info.get("fps") or scene.render.fps or 30)
+            elapsed = max(0, scene.frame_current - scene.frame_start) / fps
+            total = max(0, scene.frame_end - scene.frame_start) / fps
+            row = layout.row()
+            row.enabled = False
+            row.label(text="{:.2f} s of {:.2f} s  ({:d} components)".format(
+                elapsed, total, int(info.get("components") or 0)))
 
-        fps = float(info.get("fps") or scene.render.fps or 30)
-        elapsed = max(0, scene.frame_current - scene.frame_start) / fps
-        total = max(0, scene.frame_end - scene.frame_start) / fps
-        row = layout.row()
-        row.enabled = False
-        row.label(text="{:.2f} s of {:.2f} s  ({:d} components)".format(
-            elapsed, total, int(info.get("components") or 0)))
+        error = str(live.get("error") or "")
+        if error:
+            row = layout.row()
+            row.alert = True
+            row.label(text=first_line(error), icon='ERROR')
+        elif not active and not discovered.get("path"):
+            row = layout.row()
+            message = str(discovered.get("error") or
+                          "Live needs a published MJCF model")
+            if discovered.get("candidates"):
+                row.alert = True
+                row.label(text=first_line(message), icon='ERROR')
+            else:
+                row.enabled = False
+                row.label(text=first_line(message), icon='INFO')
 
 
 class CADEX_PARAMS_PT_actuators(Panel):
@@ -970,6 +1092,9 @@ classes = (
     MESH_AGENT_OT_apply_slider_defaults,
     MESH_AGENT_OT_toggle_params,
     MESH_AGENT_OT_toggle_collision,
+    MESH_AGENT_OT_live_toggle,
+    MESH_AGENT_OT_live_pause,
+    MESH_AGENT_OT_live_reset,
     CADEX_PARAMS_PT_collision,
     CADEX_PARAMS_PT_simulation,
     CADEX_PARAMS_PT_actuators,

@@ -1347,16 +1347,88 @@ def test_playback_skips_the_input_frame():
 
 
 
+def test_live_pose_contract_and_controls():
+    print("test_live_pose_contract_and_controls")
+    from mesh_agent import cadex_live
+
+    identity = cadex_live.pose_to_matrix({
+        "position_mm": [12.0, -3.0, 8.0],
+        "rotation_xyzw": [0.0, 0.0, 0.0, 2.0],
+    })
+    check(identity == [
+        1.0, 0.0, 0.0, 12.0,
+        0.0, 1.0, 0.0, -3.0,
+        0.0, 0.0, 1.0, 8.0,
+        0.0, 0.0, 0.0, 1.0,
+    ], "Live pose conversion keeps Cadex millimetres and row-major matrices")
+    half = 2.0 ** -0.5
+    turn = cadex_live.pose_to_matrix({
+        "position_mm": [0.0, 0.0, 0.0],
+        "rotation_xyzw": [0.0, 0.0, half, half],
+    })
+    expected = [
+        0.0, -1.0, 0.0, 0.0,
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+    check(turn is not None and
+          max(abs(left - right) for left, right in zip(turn, expected)) < 1e-9,
+          "Live pose conversion preserves xyzw rotation semantics")
+    check(cadex_live.pose_to_matrix({
+        "position_mm": [float("nan"), 0.0, 0.0],
+        "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    }) is None, "Live rejects non-finite poses before matrix_world")
+    for idname in ("mesh_agent.live_toggle", "mesh_agent.live_pause",
+                   "mesh_agent.live_reset", "mesh_agent.live_drag"):
+        check(_operator_exists(idname), "{:s} is registered".format(idname))
+
+
+def test_live_action_suspend_releases_missing_objects():
+    print("test_live_action_suspend_releases_missing_objects")
+    from mesh_agent import cadex_animate
+    from mesh_agent import cadex_hydrate
+
+    collection = cadex_hydrate._model_collection()
+    obj = bpy.data.objects.new("Cadex Live action test", None)
+    object_name = obj.name
+    collection.objects.link(obj)
+    obj[cadex_hydrate.OUTPUT_PROP] = "cadex_live_action_test"
+    obj.animation_data_create()
+    action = bpy.data.actions.new("Cadex Live action test")
+    action_name = action.name
+    try:
+        action[cadex_animate.BAKED_SHA_PROP] = "test"
+        action.use_fake_user = False
+        obj.animation_data.action = action
+        records = cadex_animate.suspend_for_live([obj])
+        check(obj.animation_data.action is None and action.use_fake_user,
+              "Live detaches baked actions and retains them temporarily")
+        bpy.data.objects.remove(obj, do_unlink=True)
+        restored = cadex_animate.restore_after_live(records)
+        check(restored == 0 and bpy.data.actions.get(action_name) is None,
+              "a replaced component does not leave an orphan baked action")
+    finally:
+        remaining_object = bpy.data.objects.get(object_name)
+        if remaining_object is not None:
+            bpy.data.objects.remove(remaining_object, do_unlink=True)
+        remaining_action = bpy.data.actions.get(action_name)
+        if remaining_action is not None:
+            remaining_action.use_fake_user = False
+            if remaining_action.users == 0:
+                bpy.data.actions.remove(remaining_action)
+
+
 def test_the_simulation_panel_polls_on_content_not_geometry():
-    """The one panel with a poll, and it is about the model, not the layout.
+    """The one panel with a poll, and it is about simulation content.
 
     ADR-035 removed every poll that asked *where* a panel was being drawn.
-    This one asks whether the model has a simulation at all, so a model
-    without one sees the parameters editor exactly as before -- a different
-    question, and the only kind of poll still worth having.
+    It appears for either a baked recording or a published Live MJCF model.
+    Both are model content, not facts about where the panel is drawing.
     """
     print("test_the_simulation_panel_polls_on_content_not_geometry")
     from mesh_agent import cadex_animate
+    from mesh_agent import cadex_live
 
     cls = getattr(bpy.types, "CADEX_PARAMS_PT_simulation", None)
     check(cls is not None, "CADEX_PARAMS_PT_simulation is registered")
@@ -1368,15 +1440,23 @@ def test_the_simulation_panel_polls_on_content_not_geometry():
     check("poll" in cls.__dict__, "and it does poll")
 
     scene = bpy.context.scene
+    original_has_artifacts = cadex_live.has_mjcf_artifacts
     if cadex_animate.SCENE_FLAG in scene:
         del scene[cadex_animate.SCENE_FLAG]
-    check(not cls.poll(bpy.context),
-          "a model with no simulation does not show the panel")
-    scene[cadex_animate.SCENE_FLAG] = {"fps": 30, "frames": 21,
-                                       "components": 2, "seconds": 1.0}
-    check(cls.poll(bpy.context),
-          "a model with one does")
-    del scene[cadex_animate.SCENE_FLAG]
+    try:
+        cadex_live.has_mjcf_artifacts = lambda _scene: False
+        check(not cls.poll(bpy.context),
+              "a model with no recording or Live model hides the panel")
+        scene[cadex_animate.SCENE_FLAG] = {
+            "fps": 30, "frames": 21, "components": 2, "seconds": 1.0}
+        check(cls.poll(bpy.context), "a baked recording shows the panel")
+        del scene[cadex_animate.SCENE_FLAG]
+        cadex_live.has_mjcf_artifacts = lambda _scene: True
+        check(cls.poll(bpy.context), "a published Live MJCF shows the panel")
+    finally:
+        cadex_live.has_mjcf_artifacts = original_has_artifacts
+        if cadex_animate.SCENE_FLAG in scene:
+            del scene[cadex_animate.SCENE_FLAG]
 
 
 def main():
@@ -1406,6 +1486,8 @@ def main():
         test_playback_reorders_the_quaternion_and_keeps_it_continuous()
         test_playback_frame_range_covers_the_run()
         test_playback_skips_the_input_frame()
+        test_live_pose_contract_and_controls()
+        test_live_action_suspend_releases_missing_objects()
         test_the_simulation_panel_polls_on_content_not_geometry()
         if os.environ.get("MESH_AGENT_LIVE"):
             test_live_claude_turn()

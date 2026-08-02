@@ -10254,3 +10254,36 @@ the existing `cadex_face` polygon attribute. Face ids match tessellation
 `face_ranges` / inspect. Whole-body `diffuse` remains the default for
 unlisted faces.
 
+## ADR-105 - Live MuJoCo runs beside the shell (2026-08-02)
+
+**Status:** accepted. **Scope:** the engine payload's standalone Live stepper,
+`mesh_agent` pose client and Simulation controls, and project MJCF artifacts.
+The cadexd protocol and the offline simulation trace stay unchanged.
+
+**Decision.** Cadex Live uses a sidecar process launched with the engine
+payload's Python and official MuJoCo 3.10. The sidecar loads one accepted MJCF
+artifact, requires keyframe `solved`, steps at the model timestep, and streams
+display-rate body poses over a single localhost NDJSON connection. Commands on
+that connection pause, resume, reset, set controls, apply world-frame forces,
+clear forces, and shut down.
+
+The Blender shell never imports `mujoco` or `CadexDynamics`. `cadex_live.py`
+owns process lifecycle and the main-thread timer, converts metres to
+millimetres plus `xyzw` into row-major matrices, and delegates object lookup
+and `matrix_world` assignment to `cadex_hydrate.apply_placements`. Body names
+are the accepted component output names already stored as `cadex_output`.
+
+The Simulation panel keeps the baked recording path and labels it **Play
+recording**. **Live**, **Pause/Resume**, **Reset**, and explicit **Drag Body**
+controls are parallel, not a replacement. Starting Live detaches baked
+`CadexSim` actions so F-Curves cannot overwrite streamed poses; a normal stop
+restores them. File load, project replacement, and add-on shutdown terminate
+the sidecar and clear forces. A viewport drag sends a capped spring-damper
+force at the selected world point and clears it on release or cancel.
+
+Live v1 requires the accepted script to publish one MJCF model. If several are
+present, `live_model` is the explicit preferred name; otherwise ambiguity is
+shown instead of silently choosing. The offline trace remains the durable,
+saveable evidence. Live state is intentionally ephemeral and is not baked or
+stored in the `.blend` unless a later recording feature does so explicitly.
+
