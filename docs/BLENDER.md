@@ -1,6 +1,6 @@
 # BLENDER.md — The Shell
 
-Verified against source: 2026-08-01
+Verified against source: 2026-08-02
 
 **The shell is the product, and since ADR-030 it is in this repository**, at
 `shell/` — a Blender fork whose `mesh_agent` add-on is the interface. Nothing
@@ -72,13 +72,17 @@ that `docs/VISION.md` describes, and the protocol client that
 
 | File | Role |
 |---|---|
-| `__init__.py` | Add-on registration; preferences (model selection, Claude CLI path, tool-call limit); save/load lifecycle handlers; undo-batching hookup. |
-| `agent.py` | Turn orchestration and event loop. Queues tool calls from the bridge; drains them on the main thread; pushes **one undo step per chat turn**. |
+| `__init__.py` | Add-on registration; Open Grok-default / optional-Claude preferences; save/load lifecycle handlers. File load and Save-As stop a terminal whose project identity changed and rotate the localhost bridge credentials before the new file is adopted. |
+| `agent.py` | Headless turn orchestration and the shared main-thread bridge pump. Queues tool calls from the bridge, rotates its port/token on project rebind, and pushes **one undo step per classic headless chat turn**. |
 | `model.py` | The script mirror (`bpy.data.texts["model.py"]`, soft read-only) and the dynamic PropertyGroup at `scene.mesh_params`; 0.15 s debounced rebuild on slider drag, dispatched to the engine, plus an undebounced ~30 Hz `preview_params` pump in front of it for motion parameters (ADR-055). `set_script()` is a no-op when the source is unchanged and restores the cursor when it is not, and stamps the digest the dirty marking compares; `last_error()` carries a failed drag to the panel (ADR-039). `rewrite_defaults()` splices slider values into the script's `num()` declarations for **Apply as Defaults** (ADR-040) — pure text in, text out. |
 | `model_api.py` | `clamp()` — coerce a value to its spec's type and range. All that is left of a script-facing API that no script imports any more (ADR-030). |
 | `bridge.py` | Localhost TCP server (127.0.0.1, auto-assigned port, 16-byte hex token auth). Two wire ops: `list_tools`, `call`. Queues socket-thread requests for main-thread execution. |
-| `mcp_shim.py` | Standalone MCP stdio server spawned by the Claude CLI via `--mcp-config`. No `bpy` import; relays MCP tool calls to the bridge over TCP. |
-| `backend.py` | Spawns `claude -p` as a subprocess per turn; writes the MCP config (shim path/port/token); session continuity via `--resume <session-id>`. |
+| `mcp_shim.py` | Standalone MCP stdio server used by Open Grok and Claude Code. No `bpy` import; relays MCP tool calls to the bridge over TCP. |
+| `open_grok_backend.py` | Optional headless `open-grok -p` turns for non-terminal callers; writes project MCP config and resumes the provider session when available. |
+| `backend.py` | Optional Claude Code headless adapter; spawns `claude -p` per turn and resumes its session id. |
+| `terminal_session.py` | Primary Cadex Chat process: project-scoped Open Grok workdir, generated MCP config, ConPTY lifecycle, blend metadata/status bookkeeping, and project-root rebind detection. The TUI transcript stays in Open Grok's store and is never reconstructed from the VT grid. |
+| `terminal_conpty.py`, `terminal_conpty_ctypes.py`, `terminal_vt.py` | Windows ConPTY transport and VT state used by the embedded terminal. |
+| `terminal_ui.py`, `cadex_agent.md` | VT paint and click-to-type routing for `CADEX_CHAT`, Ctrl+/- font zoom, footer controls, auto-start, and the compact Cadex agent identity. |
 | `tools.py` | Tool definitions/executors. Tools: `get_script`, `write_script`, `edit_script`, `restore_version`, `set_params`, `rebuild_model`, `inspect_model`, `describe_cad_api`, `get_attached_image`, `scene_summary`, `viewport_screenshot`, `export_stl`, `import_geometry`, `focus_view`, and `collision_view` (ADR-091), which shows or hides the collision overlay and reports what is already touching at t = 0. It is the agent that catches this class of bug, via `viewport_screenshot`, and it cannot press a button; it is read-only, so it is in neither `_ENGINE_TOOLS` nor `MUTATING_TOOLS` — a view toggle must not enter the undo stack. `import_geometry` copies an external STL/OBJ/PLY into the engine's asset store so a script can name it (ADR-043) — **and it is also how a trained `.cxpolicy` comes home** (ADR-084), because `import_geometry` and the `put_asset` op beneath it perform no suffix check of their own and let the engine refuse. One rough edge, stated rather than papered over: the tool is named for geometry and its success message advises `mesh.import_file(...)`, which is wrong for a policy. Fixing the wording is a `shell/` diff, and although ADR-091 has since spent that diff on the collision overlay it deliberately did not spend it here — one authorised feature does not license unrelated edits (ADR-086 §4) — so the engine-side refusals still carry the correct advice instead; `inspect_model` gained the `output` and `assets` scopes with it, and the `history` scope with ADR-045. `restore_version` puts a previously accepted version back — it reads `inspect scope=history` and writes the result through `write_script`, so a restored version re-runs and is re-accepted rather than trusted (ADR-045); `write_script` itself now refuses to drop outputs the model currently has unless `replace` is set, because "add a part" answered with a whole-script rewrite is how a project gets deleted. Marks `write_script`/`edit_script`/`restore_version`/`set_params`/`rebuild_model` as mutating for undo counting, and preflights the engine-reaching ones so a missing engine reads as one sentence. `rebuild_model` re-runs the script the engine already holds (ADR-039) — the tool to reach for when the model and the engine have drifted. |
 | `ui.py` | The panels of the two Cadex editors — transcript, message box, parameter sliders — plus the operators (send, cancel, new chat, attach image, paste, toggle parameters, toggle script, toggle collision shapes, rebuild from saved script, rebuild model, apply as defaults). The Collision panel (ADR-091) polls a scene flag the way the Simulation panel does and surfaces the initial-contact line — *touching at t = 0 … at z = 20.00 mm* — which is the one row that would have caught the hopper ADR-087 found. No `poll` here asks *where* it is drawing: the space type answers that (ADR-035). The **Policy Outputs** panel (ADR-096) does the same for a rollout: one `layout.progress` bar per actuator, drawn from `scene.frame_current` at draw time against the range the task bundle derived, so a bar pinned at an end *is* the policy saturating that motor. It is a readout, not a control — `progress` takes no input, and these numbers are a recording. The **Training** panel (ADR-098) is the third of that family and the only one that is not about a finished artifact: state, iteration against total, elapsed, ETA, reward, **mean episode length** (ADR-101), best-so-far **and the iteration it happened at**, and the checkpoints pulled so far. The episode-length row is the one to read against the reward: a reward climbing while it falls is a policy failing sooner and being paid more for it, which is what two runs did with nothing recording it. That best-so-far pair is the rest of the point — the gap between the best iteration and the current one is the decision to stop, and `mg-legs` peaked at 1200 of 2000 with nobody able to see it. It polls `cadex_training.read_progress`, so it is absent on a project with no run and stays up on `done`/`failed` rather than vanishing, because "it finished" is information and an empty panel is not. The parameters panel draws a failed drag as an alert row with **Rebuild Model** beside it (ADR-039), and an **Apply as Defaults** button that is live only while a slider sits away from its declared default (ADR-040). |
 | `spaces.py` | Headers for `CADEX_CHAT` and `CADEX_PARAMS`, and the script view: `MESH_AGENT_OT_show_script` (a **toggle** — a Text Editor on the `model.py` mirror, opened or closed), `MESH_AGENT_OT_revert_script`, and `CADEX_PT_script`, its sidebar panel, which says whether the buffer matches the model and offers **Apply to Model** / **Revert to Model** / **Rebuild Model** accordingly (ADR-039). Headers live here rather than in `bl_ui` because `bl_ui` is inherited and this is ours. |
@@ -205,15 +209,21 @@ that `docs/VISION.md` describes, and the protocol client that
 
 ### The AI bridge
 
-- Per turn, `backend.py` spawns the Claude Code CLI (`claude -p … --resume`)
-  with an MCP config pointing at `mcp_shim.py`. The shim speaks MCP over
-  stdio and relays each tool call to `bridge.py` over authenticated localhost
-  TCP; the bridge queues the call for the Blender main thread and returns the
-  result.
-- Undo policy: mutating tool calls (`write_script`, `set_params`) increment a
-  counter; when the turn finishes, if any mutation happened, exactly one
-  `ed.undo_push()` is issued, labeled "Mesh: " + the first 60 chars of the
-  user prompt. **One user turn = one undo step.**
+- `terminal_session.py` starts one interactive Open Grok TUI in the current
+  project's workdir and writes an MCP config containing the live bridge
+  port/token. `mcp_shim.py` speaks MCP over stdio and relays each call to
+  `bridge.py` over authenticated localhost TCP; the bridge queues it for the
+  Blender main thread and returns the result.
+- The classic non-terminal path remains: `open_grok_backend.py` or
+  `backend.py` spawns one headless turn against that same bridge. Its
+  mutating calls are batched into exactly one `ed.undo_push()` per turn.
+- A file load stops the old ConPTY before adopting the new `.blend`; Save-As
+  does the same when `project_root(scene)` changes. Both rotate the bridge
+  credentials, so a stale shim cannot call tools against the new scene. The
+  next auto-start rewrites the new project's MCP config.
+- `modes.system_prompt()` is the single prompt contract for terminal and
+  headless paths. It states behavior only; `describe_cad_api` is the live API
+  truth and the engine-free suite rejects copied operation names/examples.
 
 ### The two Cadex editors
 
@@ -228,32 +238,23 @@ registered by the add-on.
 
 | Region | Draws | Panel |
 |---|---|---|
-| `RGN_TYPE_WINDOW` | the transcript | `CADEX_CHAT_PT_transcript` |
-| `RGN_TYPE_EXECUTE` | the message box and its button row | `CADEX_CHAT_PT_input` |
-| `RGN_TYPE_HEADER` | model selector, the pinned count | `CADEX_CHAT_HT_header` |
+| `RGN_TYPE_WINDOW` | the ConPTY-backed Open Grok VT surface | draw handler in `terminal_ui.py` |
+| `RGN_TYPE_EXECUTE` | Params / Script / Wiring toggles, model tools, terminal status/restart | `CADEX_CHAT_PT_terminal_bar` |
+| `RGN_TYPE_HEADER` | editor-type dropdown, **Cadex Chat** title, pending-pin count; no operators | `CADEX_CHAT_HT_header` |
 
-The split between the two is **status in the header, actions in the row**
-(ADR-074). The button row is four aligned groups, and the grouping is the
-documentation:
+Open Grok auto-starts. Clicking the terminal area gives it typing focus;
+clicking the viewport returns Blender shortcuts, and footer/header clicks are
+passed through so terminal input never swallows their buttons. Ctrl+plus and
+Ctrl+minus zoom Cadex's terminal font. The footer toggles Parameters, Script
+and Wiring without changing the input model.
 
-| Group | Buttons | What they act on |
-|---|---|---|
-| gather | attach image, paste image, Pin Face, Pin Point, Define Terminal | what the *next message* will carry |
-| model | Rebuild Model | the *model*: re-runs the script the engine holds, sends nothing |
-| views | Parameters, Script, Wiring | open/close, each depressed while its view is open |
-| turn | New Chat, Send/Stop | the *turn* |
+The classic transcript and message-box panels remain registered for the
+headless fallback and tests, but their `poll()` returns false in the product
+UI. They are not a second primary input surface.
 
-Nothing in the row is hidden when it does not apply — `Define Terminal` greys
-out instead, because a row that changes width as you enter and leave Edit
-Mode moves every other button under the pointer.
-
-`RGN_TYPE_EXECUTE` is the load-bearing part. `RGN_TYPE_IS_HEADER_ANY`
-(`DNA_screen_types.h`) covers `HEADER`, `TOOL_HEADER`, `FOOTER`,
-`ASSET_SHELF_HEADER` and `SCRUBBING` and deliberately **not** `EXECUTE` — so
-an execute region is an ordinary sizable panel region, not subject to the
-one-row limit that once forced the message box into a screen area of its own
-(ADR-034). It is `RGN_ALIGN_BOTTOM`, `prefsizey = 6 * HEADERY`, and
-user-resizable.
+`RGN_TYPE_EXECUTE` remains an ordinary bottom-aligned, user-resizable region;
+the terminal paint is confined to `RGN_TYPE_WINDOW`, so the footer is Cadex
+chrome rather than part of the VT screen.
 
 **Cadex Parameters**, two regions: `RGN_TYPE_WINDOW` for the sliders
 (`CADEX_PARAMS_PT_parameters`) and a header. Four more panels share that
@@ -269,10 +270,10 @@ is open — closes it, or splits the viewport and sets `area.type`. That is the
 whole operator now: no pointer bookkeeping and no retry timer, because there
 is no space-data swap to wait on.
 
-Neither space type has DNA fields of its own. Transcript scroll is region
-state, parameter values live in `scene.mesh_params`, the model selector is an
-add-on preference, and the draft message is a `WindowManager` property. DNA is
-append-only forever, so keep it that way.
+Neither space type has DNA fields of its own. Terminal process/VT state is
+owned by the add-on, parameter values live in `scene.mesh_params`, and the
+legacy draft message is a `WindowManager` property. DNA is append-only
+forever, so keep it that way.
 
 **What this replaced.** Until 2026-07-26 the three columns were three
 *Properties* editors pinned to the Tool tab, drawing `bl_space_type='VIEW_3D'`
@@ -465,7 +466,7 @@ Added in Phase 7 (ADR-023/024); the bundled engine itself is §6 below.
 | Off-thread modeling | `cadex_backend.Lifecycle` + `tools.Pending`; the agent's drain loop polls, so Blender stays live during a rebuild |
 | Cancellation | a per-turn `threading.Event` bound into the client's `cancellation_check`; the engine answers `RUN_CANCELLED` |
 | API truth | the `describe_cad_api` tool; the system prompt carries **no** API names, and a test asserts it (`bl_mesh_agent.py`) |
-| Conversation | transcript + Claude `session_id` in the `.blend` (`history.py`) |
+| Conversation | Classic headless transcript + session id in the `.blend`; embedded Open Grok continuity in its project workdir, with only lifecycle notices and discoverable workdir/session metadata mirrored by `history.py` (ADR-103) |
 | CI | `.github/workflows/cadex-app.yml` — engine → payload → shell, then the suites with no engine env set |
 
 ## 5. What carried from mesh_agent into the cadex integration (Phase 6, landed)

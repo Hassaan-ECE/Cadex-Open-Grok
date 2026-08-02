@@ -1,6 +1,6 @@
 # CLAUDE.md — Agent Entry Point
 
-Verified against source: 2026-08-01. This file replaces the retired
+Verified against source: 2026-08-02. This file replaces the retired
 `AGENTS.md` (see `docs/DECISIONS.md` ADR-005).
 
 Cadex is an AI-native CAD app. **This repository is the whole product**
@@ -38,8 +38,11 @@ AI turn against a project; `./cadex params --set k=v` sweeps its parameters
 with no model in the loop at all. It is peer to the shell, not part of it,
 and shares no code with it.
 
-There is no Qt shell, no provider stack, and no API-key model loop — the AI
-runs as the Claude Code CLI, inside the shell or driven by `cli/`.
+There is no Qt shell and no API-key model loop. The shell's primary agent is
+an embedded Open Grok terminal authenticated by OAuth; model selection lives
+inside Open Grok (`/model`). Headless Open Grok turns and optional Claude Code
+compatibility remain adapters around the same mesh MCP bridge. `cli/` is a
+separate protocol client with its own documented orchestration.
 `pixi run build-engine` produces `FreeCADCmd` and `CadexGeometryWorker` and
 no application; the application is what `pixi run build-shell` installs, with
 the engine inside it.

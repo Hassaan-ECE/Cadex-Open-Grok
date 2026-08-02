@@ -10167,3 +10167,90 @@ unchanged and was never about the branch.
   are now simply owned: pruning `mujoco/experimental/` (−29.5 MB) and the
   `describe_api` scoping in §3 above. Neither is scheduled by this entry.
 - `docs/ROADMAP.md` Phase 14 stops being "off everyone's path".
+
+## ADR-103 — Open Grok terminal is the Cadex Chat session (2026-08-02)
+
+**Status:** accepted. **Scope:** `shell/scripts/addons_core/mesh_agent/`,
+`shell/tests/python/bl_mesh_agent.py`, and the current shell/product docs.
+No protocol change, no engine API change, and no terminal-UX redesign.
+
+**Decision.** Cadex Chat's primary interaction is the embedded, interactive
+Open Grok terminal authenticated through Open Grok's OAuth login. It
+auto-starts in `SPACE_CADEX_CHAT`; clicking its window types there, Ctrl+/-
+zooms the Cadex-side font, the header keeps the editor dropdown and **Cadex
+Chat** title, and the EXECUTE footer keeps Params / Script / Wiring and model
+tools. Model selection for this path lives inside Open Grok (`/model`).
+Headless Open Grok and optional Claude Code remain compatibility adapters,
+not a second product surface.
+
+### Prompt truth
+
+`modes.system_prompt()` is shared by terminal and headless adapters and is a
+small behavioral contract only: script-is-model, millimeters, mesh MCP,
+structured-error recovery, and `describe_cad_api` before authoring. It
+contains no xscript operation names, signatures, skeletons or example
+programs. The live engine response is the sole API truth; the background
+suite pins both the absence of copied names and the prompt size.
+
+### Session ownership
+
+The interactive TUI's actual conversation belongs to Open Grok's session
+store for the project workdir. Cadex does **not** scrape the VT grid and call
+that a transcript. `history.py` mirrors only start/stop/restart notices, the
+workdir, and a session id if Open Grok exposes one reliably in the future.
+Classic headless turns keep their existing `.blend` transcript and resumable
+session id. This refines ADR-020 decision 4 rather than pretending two
+different process models have the same persistence mechanism.
+
+### File boundary
+
+The ConPTY process is process-global but its identity is project-scoped. On
+file load it is stopped **before** the new `.blend` state is adopted. On
+Save-As it is stopped whenever `project_root(scene)` changes. Both paths
+rotate the localhost bridge port/token; the next auto-start writes a fresh
+project MCP config, so an old shim cannot call tools against the new scene.
+Add-on shutdown stops quietly without mutating the file.
+
+### Windows payload environment
+
+`PYTHONHOME`, `PYTHONPATH` and payload PATH prefixes are injected only when a
+valid `cadex-engine.json` found above the selected `FreeCADCmd` names that
+exact executable. Stock FreeCAD, developer trees and arbitrary explicit
+paths inherit the parent environment. This keeps the staged Windows payload's
+extension-module workaround without manufacturing `PYTHONHOME=C:\Windows`
+for unrelated executables.
+
+## ADR-104 — Per-output display color (viewport paint) (2026-08-02)
+
+**Status:** accepted. **Scope:** part DomainValue appearance, lifecycle
+`display` map, and Blender hydrate. Does **not** revive the FreeCAD Material
+catalog domain (ADR-006 / ADR-010).
+
+**Decision.** Cadex scripts may attach **display paint** to part outputs via:
+
+- optional `color=` on builders such as `part.box` / `part.cylinder` / `part.fuse`
+- `part.paint(shape, color=…)` for post-boolean recolor
+
+Colors are sRGB `[r,g,b]` or `[r,g,b,a]` (0–1 or 0–255) or `#RRGGBB`. They
+store as `properties.appearance = { diffuse: [r,g,b,a] }` on the DomainValue,
+thread into `display[name].appearance` for the shell, and become one Blender
+material per output in `cadex_hydrate`. Appearance is folded into the hydrate
+cache key so color-only edits refresh materials without a geometry change.
+
+**Non-goals (this ADR):** per-face colors, material catalog UUIDs, physical
+cards, STEP import colors, FreeCAD `ViewObject` as the display path.
+
+**Rationale.** ADR-063 deferred solder-vs-wire color because the part domain
+had no appearance vocabulary. The viewport is Blender (GUI off); paint must
+travel script → engine → display → hydrate. Per-part MVP unblocks painted
+parts; per-face paint is a later phase on the same pipe using `cadex_face`.
+
+
+### Amendment (2026-08-02) — per-face paint
+
+`part.paint_faces` adds `appearance.faces` as a map of **1-based BREP face
+id → diffuse**. Hydrate assigns material slots per unique face color using
+the existing `cadex_face` polygon attribute. Face ids match tessellation
+`face_ranges` / inspect. Whole-body `diffuse` remains the default for
+unlisted faces.
+

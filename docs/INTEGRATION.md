@@ -1,6 +1,6 @@
 # INTEGRATION.md — The Process Contract
 
-Verified against source: 2026-08-01
+Verified against source: 2026-08-02
 
 **This document is the contract between the two halves of the product.**
 They live in one repository (ADR-030) and in two processes, under two
@@ -393,13 +393,13 @@ raw NDJSON — is `cadex_tests/cadexd_latency_integration.py` today.
 - ~~Exact transport (stdio vs socket); per-project vs multiplexing~~ —
   decided 2026-07-25 (ADR-017): stdio NDJSON, one cadexd per project,
   spawned/owned by the shell.
-- ~~Where conversation history lives post-split~~ — decided 2026-07-25
-  (ADR-020, decision 4): **the `.blend`**, together with the Claude Code
-  `session_id`. This **reverses** the `$CADEX_HOME` lean recorded here
-  earlier. The conversation is shell state — the engine has no notion of a
-  turn — and one file a user can move, copy and mail beats a second store
-  beside it. The engine's conversation store was deleted with the Qt shell
-  (ADR-021).
+- ~~Where conversation history lives post-split~~ - decided 2026-07-25 and
+  refined 2026-08-02 (ADR-020 decision 4, ADR-103). Classic headless turns
+  keep transcript + resumable session id in the `.blend`. The primary
+  interactive Open Grok TUI keeps its real conversation in Open Grok's
+  project-scoped workdir; the `.blend` mirrors lifecycle notices and any
+  discoverable workdir/session metadata, never a transcript scraped from the
+  VT display. The engine still has no notion of a turn.
 - ~~Progressive tessellation (stream coarse then refine)~~ — shipped
   2026-07-25 (ADR-019): drag requests `draft` quality, a cancellable
   background `rebuild` restores `standard` after the drag settles.

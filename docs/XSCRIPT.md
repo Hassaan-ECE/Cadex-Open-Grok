@@ -316,6 +316,36 @@ result = {"plate": plate, "hull": hull, "asm": asm}  # named outputs, by domain
   partdesign → mesh → assembly, reusing the per-domain evaluators and
   serializers.
 
+### Viewport paint (display color) `[ADR-104]`
+
+Parts may carry **display paint** for the Cadex viewport (Blender). This is
+not a FreeCAD Material catalog and not physics density.
+
+```python
+cube = part.box(30, 30, 30, label="Cube", color=(1.0, 0.2, 0.1))
+wire = part.cable(..., color="#333333")
+body = part.paint(fused, color=(0.85, 0.75, 0.35))  # after booleans
+result = {"Cube": cube}
+```
+
+- **Formats:** `[r,g,b]` / `[r,g,b,a]` with channels in **0–1** or **0–255**,
+  or `#RRGGBB` / `#RRGGBBAA`.
+- **Storage:** `properties.appearance.diffuse` on the DomainValue; the shell
+  hydrates one material per output.
+- **Booleans:** paint does not auto-merge from children — prefer
+  `part.paint` on the result when you need a single color.
+- **Per-face colors** (1-based BREP face ids, same as `cadex_face` /
+  `inspect_model`):
+
+```python
+# One color on several faces
+body = part.paint_faces(body, faces=[1, 2, 3], color=(1, 0, 0))
+# Map of face → color (merges with prior paint_faces)
+body = part.paint_faces(body, colors={1: "#ffffff", 2: "#ffff00", 6: (0, 0, 1)})
+```
+
+Unlisted faces keep the whole-body `diffuse` (from `color=` / `paint`) if set.
+
 ### Naming geometry: selectors, not indices `[Phase 10b, ADR-029]`
 
 Five part ops — `subshape`, `defeature`, `fillet`, `chamfer`, `thicken` —

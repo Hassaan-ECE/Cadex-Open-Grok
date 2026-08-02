@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — What Exists Today
 
-Verified against source: 2026-08-01
+Verified against source: 2026-08-02
 
 This document describes the code as it **is**, not as it will be. Targets live
 in `docs/VISION.md`, `docs/XSCRIPT.md` (direction section),
@@ -281,10 +281,12 @@ schema-checked writes. A candidate is written before it runs and rolled back
 if it fails, so `script.py` only ever holds a source that executed; the
 accepted revision's own source stays pinned in its staging directory and is
 readable with `read_accepted_source()`, which is what the restore pass falls
-back to when the working script will not run at all (ADR-044). **Conversation history is no longer here**: it lives
-in the `.blend` with the Claude Code session id (ADR-020, decision 4), and
-the engine's conversation store died with the Qt shell. VibeCAD-era
-per-domain program stores are not migrated (ADR-011).
+back to when the working script will not run at all (ADR-044).
+**Conversation history is no longer an engine concern**: classic headless
+history lives in the `.blend`, while the embedded Open Grok TUI uses its own
+project-scoped session store and mirrors only lifecycle/workdir metadata into
+the `.blend` (ADR-103). The engine's conversation store died with the Qt
+shell. VibeCAD-era per-domain program stores are not migrated (ADR-011).
 
 ### Support
 

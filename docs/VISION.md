@@ -1,6 +1,6 @@
 # VISION.md — What Cadex Is Becoming
 
-Verified against source: 2026-08-01
+Verified against source: 2026-08-02
 
 This document is the product vision. It is authoritative: when a change
 conflicts with this document, the change is wrong or the vision needs an
@@ -147,18 +147,19 @@ returning it.
   and a cheap loop then sweeps it under an external simulator with no model
   in the loop at all. Interactive design and batch design are different
   jobs, and one program that did both would serve neither.
-- **A second provider stack.** The AI is the Claude Code CLI — in the shell
-  and in `cli/` alike. There is no API-key path, no model picker, no
-  provider abstraction (ADR-020).
+- **An in-process or API-key provider stack.** The shell's primary assistant
+  is the embedded Open Grok terminal, authenticated through Open Grok's OAuth
+  login, with model selection inside `/model` (ADR-103). Optional headless
+  Open Grok and Claude Code adapters exist for non-terminal turns; Cadex owns
+  neither provider SDKs nor provider credentials.
 
   What this does *not* forbid, since ADR-061, is a second **turn
-  orchestration**: the shell and the CLI each spawn `claude -p` from their
-  own code, because one is a chat window and the other is a process with an
-  exit code. That is a real duplication and the ADR says so plainly. What
-  keeps it from becoming drift is that neither of them states the xscript
-  API — both ask the engine through `describe_api` — and that the CLI's tool
-  schemas are generated from `OP_ARG_SPECS` rather than written. A third
-  front end would need the same discipline or it should not be built.
+  orchestration**: the interactive shell and the CLI have different process
+  lifetimes and exit semantics. What keeps them from becoming product drift
+  is that neither states the xscript API: both ask the live engine through
+  `describe_api`, and the shell prompt is test-pinned against copied API
+  names. A third front end would need the same discipline or it should not be
+  built.
 - **Dependence on FreeCAD or Blender.** OCCT stays as the geometry kernel,
   and so does **MuJoCo** as the dynamics kernel — a dependency in the OCCT
   category, kept upstream and unmodified rather than forked (ADR-075).
