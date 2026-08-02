@@ -3,18 +3,19 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Mesh Agent: chat-driven scene building, powered by Claude Code.
+Mesh Agent: chat-driven scene building.
 
-The assistant runs `claude -p` (the user's installed Claude Code CLI, using
-their existing login) and drives the live Blender session through a curated
-tool set exposed over MCP. See agent.py for the threading model.
+Cadex chat *is* the embedded Open Grok terminal (ConPTY + mesh MCP). It
+auto-starts with the chat editor; model selection lives in open-grok
+(``/model``). OAuth: ``open-grok login --oauth`` / ``--codex``. Headless
+``open-grok -p`` remains only as a non-UI backend path.
 """
 
 bl_info = {
     "name": "Mesh Agent",
-    "description": "Chat assistant that builds and edits the scene",
+    "description": "Chat assistant that builds and edits the scene (Open Grok / Claude)",
     "author": "Mesh",
-    "version": (0, 1),
+    "version": (0, 2),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar > Mesh",
     "support": "OFFICIAL",
@@ -35,6 +36,8 @@ from . import wiring as wiring_module
 from . import wiring_ui as wiring_ui_module
 from . import topbar as topbar_module
 from . import ui
+from . import terminal_session
+from . import terminal_ui
 
 
 def _wrap_remedy(text, width=64):
@@ -54,16 +57,42 @@ def _wrap_remedy(text, width=64):
 class MeshAgentPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
+    agent_backend: bpy.props.EnumProperty(
+        name="Agent Backend",
+        description="CLI agent that runs each chat turn (OAuth; no API keys from Cadex)",
+        items=(
+            ('open_grok', "Open Grok (recommended)",
+             "open-grok headless; Grok OAuth and/or ChatGPT OAuth via "
+             "`open-grok login --oauth` / `--codex`"),
+            ('claude', "Claude Code",
+             "claude -p; requires Anthropic / Claude subscription"),
+        ),
+        default='open_grok',
+    )
     model: bpy.props.EnumProperty(
         name="Model",
-        description="Claude model used by the assistant",
+        description="Model id for the selected backend",
         items=(
-            ('claude-fable-5', "Fable (most capable)", "Best quality, newest model"),
-            ('claude-opus-4-8', "Opus", "High quality"),
-            ('claude-sonnet-4-6', "Sonnet (balanced)", "Good quality, faster"),
-            ('claude-haiku-4-5', "Haiku (fastest)", "Snappy simple edits"),
+            # Open Grok / multi-provider (no bare grok-4 — use 4.5)
+            ('grok-4.5', "grok-4.5",
+             "Grok 4.5 via open-grok login --oauth"),
+            ('gpt-5.6-sol', "gpt-5.6-sol",
+             "ChatGPT OAuth via open-grok login --codex"),
+            ('__default__', "Config default",
+             "Use the model from ~/.opengrok config"),
+            # Claude Code (only when backend is Claude)
+            ('claude-fable-5', "Claude Fable", "Claude Code only"),
+            ('claude-opus-4-8', "Claude Opus", "Claude Code only"),
+            ('claude-sonnet-4-6', "Claude Sonnet", "Claude Code only"),
+            ('claude-haiku-4-5', "Claude Haiku", "Claude Code only"),
         ),
-        default='claude-fable-5',
+        default='grok-4.5',
+    )
+    open_grok_path: bpy.props.StringProperty(
+        name="Open Grok Path",
+        description="Path to open-grok.exe (leave empty to auto-detect)",
+        subtype='FILE_PATH',
+        default="",
     )
     claude_path: bpy.props.StringProperty(
         name="Claude Code Path",
@@ -73,7 +102,8 @@ class MeshAgentPreferences(bpy.types.AddonPreferences):
     )
     max_tool_calls: bpy.props.IntProperty(
         name="Tool Call Limit",
-        description="Maximum tool calls the assistant may make in one turn",
+        description="Maximum tool calls / agent turns the assistant may make "
+                    "in one chat turn",
         default=agent_module.DEFAULT_TOOL_CAP,
         min=1, max=200,
     )
@@ -101,8 +131,12 @@ class MeshAgentPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context):
         layout = self.layout
+        layout.prop(self, "agent_backend")
         layout.prop(self, "model")
-        layout.prop(self, "claude_path")
+        if self.agent_backend == 'open_grok':
+            layout.prop(self, "open_grok_path")
+        else:
+            layout.prop(self, "claude_path")
         layout.prop(self, "max_tool_calls")
         layout.prop(self, "freecadcmd_path")
         budgets = layout.row(align=True)
@@ -128,9 +162,20 @@ class MeshAgentPreferences(bpy.types.AddonPreferences):
                 sub.label(text=line)
 
         column = layout.column()
-        column.label(
-            text="Uses your Claude Code login; run `claude` once in a "
-                 "terminal to sign in.", icon='INFO')
+        if self.agent_backend == 'open_grok':
+            column.label(
+                text="Auth: open-grok login --oauth (Grok) and/or "
+                     "--codex (ChatGPT). No API keys.",
+                icon='INFO')
+            column.label(
+                text="Embedded terminal: Start Open Grok in the chat editor "
+                     "(needs pywinpty in Cadex Python).",
+                icon='CONSOLE')
+        else:
+            column.label(
+                text="Uses Claude Code login; run `claude` once in a "
+                     "terminal to sign in.",
+                icon='INFO')
         if not bpy.app.online_access:
             column.label(
                 text="Online access is disabled in Preferences > System > Network.",
@@ -151,23 +196,116 @@ def _save_pre_handler(_filepath):
         pass
 
 
+def _stop_terminal_for_file_change(scene=None, require_rebind=False):
+    """Stop the old project terminal and invalidate its MCP credentials."""
+    if terminal_session.get_session() is None:
+        return False
+    if require_rebind and not terminal_session.needs_rebind(scene):
+        return False
+    terminal_session.stop(persist=False)
+    agent_module.get_agent().rotate_bridge()
+    return True
+
+
 @persistent
 def _save_post_handler(_filepath):
     # Save-As renames the file, and the engine project root is derived from
     # the file name: the child spawned for the old root is no longer this
     # file's engine. Drop it, and say so if the model was left behind.
-    _report_file_change()
+    try:
+        scene = bpy.context.scene
+    except Exception:
+        scene = None
+    # First save of an unsaved file also needs a terminal home created.
+    was_running = terminal_session.is_running()
+    rebound = _stop_terminal_for_file_change(
+        scene, require_rebind=True)
+    # If nothing was running (user just saved for the first time), still
+    # ensure the project home exists so auto-start can resume/create chat.
+    try:
+        terminal_session.ensure_project_home(scene)
+    except Exception:
+        pass
+    try:
+        note = cadex_backend_module.on_file_changed(scene)
+    except Exception:
+        note = ""
+    agent = agent_module.get_agent()
+    if note:
+        agent.history.add("status", note)
+    if rebound:
+        agent.history.add(
+            "status",
+            "Open Grok terminal stopped after the project path changed; "
+            "chat will restart for this file's project home.",
+        )
+    elif not was_running and terminal_session.project_home_ready(scene):
+        pending = terminal_session.peek_pending_launch_prompt()
+        if pending:
+            agent.history.add(
+                "status",
+                "Project saved. Starting chat with your first message…",
+            )
+        else:
+            agent.history.add(
+                "status",
+                "Project saved. Cadex Chat will start here and keep history "
+                "with this file.",
+            )
+    if note or rebound or not was_running:
+        agent.save_state()
+    # Kick Open Grok immediately after save (with queued first prompt if any).
+    try:
+        if terminal_session.project_home_ready(scene):
+            terminal_session.ensure_project_home(scene)
+            if not terminal_session.is_running():
+                from . import terminal_ui as terminal_ui_module
+                prompt = terminal_session.peek_pending_launch_prompt() or None
+                terminal_ui_module._ensure_terminal(initial_prompt=prompt)
+    except Exception:
+        pass
+    # Nudge chat redraw so the save gate flips to starting/TUI.
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'CADEX_CHAT':
+                    area.tag_redraw()
+    except Exception:
+        pass
 
 
 @persistent
 def _load_post_handler(_filepath):
-    agent_module.get_agent().load_state()
+    # Stop before adopting the new .blend: the old process must never see the
+    # new scene through its still-live MCP bridge.
+    stopped = _stop_terminal_for_file_change()
+    agent = agent_module.get_agent()
+    agent.load_state()
     # Restore parameter sliders from the specs saved in the scene.
     model_module.on_load()
     # A different file is current; its engine project is a different one.
     # Without this, opening a second .blend leaks the first file's cadexd
     # child and can answer from the wrong project store.
-    _report_file_change()
+    note = _report_file_change()
+    try:
+        terminal_session.ensure_project_home()
+    except Exception:
+        pass
+    if stopped:
+        agent.history.add(
+            "status",
+            "Previous Open Grok terminal stopped; this file will resume its "
+            "own project-scoped chat when ready.",
+        )
+    if note or stopped:
+        agent.save_state()
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'CADEX_CHAT':
+                    area.tag_redraw()
+    except Exception:
+        pass
 
 
 @persistent
@@ -202,9 +340,10 @@ def _report_file_change():
     try:
         note = cadex_backend_module.on_file_changed(scene)
     except Exception:
-        return
+        return ""
     if note:
         agent_module.get_agent().history.add("status", note)
+    return note or ""
 
 
 classes = (
@@ -222,6 +361,8 @@ def register():
     cadex_training_module.register()
     wiring_module.register()
     ui.register()
+    # Embedded Open Grok terminal (ConPTY) in CADEX_CHAT.
+    terminal_ui.register()
     spaces.register()
     # Registers the menus; the app template is what puts them on the bar
     # (topbar.install), so a stock Blender session keeps its own top bar.
@@ -251,6 +392,7 @@ def unregister():
     wiring_ui_module.unregister()
     topbar_module.unregister()
     spaces.unregister()
+    terminal_ui.unregister()
     ui.unregister()
     wiring_module.unregister()
     cadex_training_module.unregister()

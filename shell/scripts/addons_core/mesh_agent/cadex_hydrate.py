@@ -55,6 +55,8 @@ COMPONENT_KIND = "component"
 #: ``source_sha256`` both times. Keyed on the SHA alone, the refine would
 #: look like a no-op and the viewport would keep the coarse mesh for good.
 SOURCE_SHA_PROP = "cadex_source_sha"
+#: Stable string of the last applied viewport appearance (display paint).
+APPEARANCE_PROP = "cadex_appearance"
 
 
 def _display_key(sidecar):
@@ -72,6 +74,162 @@ def _display_key(sidecar):
         float(sidecar.get("deflection") or 0.0),
         1 if int(counts.get("edge_vertices") or 0) > 0 else 0,
     )
+
+
+def _appearance_key(appearance):
+    """Cache key fragment for body + face paints."""
+
+    if not isinstance(appearance, dict):
+        return ""
+    parts = []
+    diffuse = appearance.get("diffuse")
+    if isinstance(diffuse, (list, tuple)) and len(diffuse) >= 3:
+        for index in range(4):
+            try:
+                value = float(diffuse[index]) if index < len(diffuse) else 1.0
+            except (TypeError, ValueError):
+                return ""
+            parts.append("d:{:.6f}".format(value))
+    faces = appearance.get("faces")
+    if isinstance(faces, dict) and faces:
+        for key in sorted(faces.keys(), key=lambda k: int(k) if str(k).isdigit() else 0):
+            color = faces[key]
+            if not isinstance(color, (list, tuple)) or len(color) < 3:
+                continue
+            chunk = []
+            for index in range(4):
+                try:
+                    value = float(color[index]) if index < len(color) else 1.0
+                except (TypeError, ValueError):
+                    value = 1.0
+                chunk.append("{:.6f}".format(value))
+            parts.append("f{:s}:{:s}".format(str(key), ",".join(chunk)))
+    return "|".join(parts)
+
+
+def _full_display_key(sidecar, appearance):
+    """Tessellation identity plus appearance so color-only updates rehydrate."""
+
+    return _display_key(sidecar) + "|" + _appearance_key(appearance)
+
+
+def _rgba(color, default=(0.8, 0.8, 0.8, 1.0)):
+    if not isinstance(color, (list, tuple)) or len(color) < 3:
+        return default
+    try:
+        r = max(0.0, min(1.0, float(color[0])))
+        g = max(0.0, min(1.0, float(color[1])))
+        b = max(0.0, min(1.0, float(color[2])))
+        a = max(0.0, min(1.0, float(color[3] if len(color) > 3 else 1.0)))
+    except (TypeError, ValueError):
+        return default
+    return (r, g, b, a)
+
+
+def _ensure_material(name, rgba):
+    """Find-or-create a Principled material with the given base color."""
+
+    import bpy
+
+    r, g, b, a = rgba
+    mat = bpy.data.materials.get(name)
+    if mat is None:
+        mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    tree = mat.node_tree
+    if tree is not None:
+        principled = None
+        for node in tree.nodes:
+            if node.type == 'BSDF_PRINCIPLED':
+                principled = node
+                break
+        if principled is None:
+            principled = tree.nodes.new(type='ShaderNodeBsdfPrincipled')
+        principled.inputs["Base Color"].default_value = (r, g, b, 1.0)
+        if "Alpha" in principled.inputs:
+            principled.inputs["Alpha"].default_value = a
+    try:
+        mat.diffuse_color = (r, g, b, a)
+    except Exception:
+        pass
+    return mat
+
+
+def _apply_appearance(obj, appearance, output_name):
+    """Assign materials: whole-body and optional per-face (1-based BREP ids)."""
+
+    import bpy
+
+    if obj is None or obj.data is None:
+        return
+    app_key = _appearance_key(appearance)
+    if str(obj.get(APPEARANCE_PROP) or "") == app_key and app_key:
+        return
+    if not app_key:
+        obj[APPEARANCE_PROP] = ""
+        return
+
+    mesh = obj.data
+    face_map = {}
+    if isinstance(appearance, dict) and isinstance(appearance.get("faces"), dict):
+        face_map = appearance["faces"]
+    default = _rgba(
+        appearance.get("diffuse") if isinstance(appearance, dict) else None
+    )
+
+    # Whole-body only.
+    if not face_map:
+        mat = _ensure_material("cadex:" + str(output_name or obj.name), default)
+        try:
+            obj.color = default
+        except Exception:
+            pass
+        mesh.materials.clear()
+        mesh.materials.append(mat)
+        obj[APPEARANCE_PROP] = app_key
+        return
+
+    # Per-face: one material slot per unique color + material_index on polygons.
+    # Slot 0 = default for unlisted faces; then sorted face-id paints.
+    palette = [("default", default)]
+    seen = {default}
+    ordered_faces = sorted(
+        face_map.keys(),
+        key=lambda k: int(k) if str(k).isdigit() else 0,
+    )
+    face_to_slot = {}
+    for face_key in ordered_faces:
+        rgba = _rgba(face_map[face_key], default)
+        if rgba not in seen:
+            seen.add(rgba)
+            palette.append((str(face_key), rgba))
+        # Map face id to palette index of this rgba
+        for index, (_label, color) in enumerate(palette):
+            if color == rgba:
+                face_to_slot[int(face_key) if str(face_key).isdigit() else 0] = index
+                break
+
+    mesh.materials.clear()
+    for label, rgba in palette:
+        mat_name = "cadex:{:s}:{:s}".format(
+            str(output_name or obj.name), label)
+        mesh.materials.append(_ensure_material(mat_name, rgba))
+
+    # cadex_face INT attribute: 1-based BREP face id per polygon.
+    face_attr = mesh.attributes.get(FACE_ATTRIBUTE)
+    if face_attr is not None and len(mesh.polygons) == len(face_attr.data):
+        for poly_index, poly in enumerate(mesh.polygons):
+            face_id = int(face_attr.data[poly_index].value)
+            poly.material_index = face_to_slot.get(face_id, 0)
+    else:
+        for poly in mesh.polygons:
+            poly.material_index = 0
+
+    try:
+        obj.color = default
+    except Exception:
+        pass
+    obj[APPEARANCE_PROP] = app_key
 
 
 def read_sidecar(sidecar_path):
@@ -351,7 +509,10 @@ def hydrate_display(display_map, revision):
         if not tessellation_record:
             continue
         sidecar_path = str(tessellation_record.get("sidecar_path") or "")
-        key = _display_key(read_sidecar(sidecar_path))
+        sidecar = read_sidecar(sidecar_path)
+        appearance = entry.get("appearance")
+        tess_key = _display_key(sidecar)
+        key = _full_display_key(sidecar, appearance)
         obj = _find(collection, name, edges=False)
 
         # The buffers this response describes are the ones already on the
@@ -359,8 +520,29 @@ def hydrate_display(display_map, revision):
         # binary, don't build a mesh, don't rewrite the face attribute.
         # Compare the hash, never the path -- every attempt gets its own
         # staging directory, so paths differ on every single request.
+        # Appearance is folded into ``key`` so color-only edits still apply.
         if (obj is not None and obj.data is not None
                 and str(obj.get(SOURCE_SHA_PROP) or "") == key):
+            obj[REVISION_PROP] = str(revision)
+            obj[SIDECAR_PROP] = sidecar_path
+            matrix = _matrix_from_placement(entry.get("placement") or [])
+            if matrix is not None:
+                obj.matrix_world = matrix
+            updated.append(obj.name)
+            keep.add(obj.name)
+            edge_obj = _find(collection, name, edges=True)
+            if edge_obj is not None:
+                edge_obj[REVISION_PROP] = str(revision)
+                keep.add(edge_obj.name)
+            continue
+
+        # Same tessellation, new paint only: skip mesh rebuild.
+        prev = str(obj.get(SOURCE_SHA_PROP) or "") if obj is not None else ""
+        if (obj is not None and obj.data is not None
+                and prev.startswith(tess_key + "|")
+                and prev != key):
+            _apply_appearance(obj, appearance, name)
+            obj[SOURCE_SHA_PROP] = key
             obj[REVISION_PROP] = str(revision)
             obj[SIDECAR_PROP] = sidecar_path
             matrix = _matrix_from_placement(entry.get("placement") or [])
@@ -393,6 +575,7 @@ def hydrate_display(display_map, revision):
         obj[KIND_PROP] = str(entry.get("artifact_kind") or "")
         obj[SIDECAR_PROP] = sidecar_path
         obj[SOURCE_SHA_PROP] = key
+        _apply_appearance(obj, appearance, name)
         matrix = _matrix_from_placement(entry.get("placement") or [])
         if matrix is not None:
             obj.matrix_world = matrix

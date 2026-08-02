@@ -2,15 +2,13 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-"""
-Chat transcript, mirrored into ``bpy.data.texts`` so it saves with the .blend
-file and survives the Simple/Pro mode toggle.
+"""Blend-scoped chat state mirrored into ``bpy.data.texts``.
 
-The .blend is where a conversation lives (cadex ADR-020, decision 4): the
-transcript *and* the Claude Code ``session_id`` that lets a later turn
-resume it. The conversation is shell state -- the engine has no notion of
-a turn -- and one file the user can move, copy and mail is worth more than
-a second store beside it.
+Classic headless turns keep their transcript and resumable session id in the
+``.blend``. The embedded Open Grok TUI is different: its full conversation
+lives in Open Grok's project-scoped session store. Cadex does not scrape the
+VT screen into a fake transcript; it stores only lifecycle notices and the
+terminal workdir/session metadata that can be discovered reliably.
 """
 
 import json
@@ -18,7 +16,8 @@ import json
 TEXT_BLOCK_NAME = "mesh_chat.json"
 SCHEMA = "mesh-chat-v1"
 
-# Roles: "user", "assistant", "status" (tool activity / notices, greyed out).
+# Roles: "user", "assistant", "status" (tool activity / notices, greyed out),
+# "thought" (model reasoning while a turn is in flight, muted).
 
 
 class ChatMessage:
@@ -33,10 +32,12 @@ class ChatHistory:
     def __init__(self):
         self.messages = []
         self._streaming = None  # message receiving streamed text
-        #: Claude Code session to resume, or "" for a fresh conversation.
-        #: Saved with the transcript, because it belongs to this .blend's
-        #: conversation and to no other.
+        #: Headless backend session to resume, or "" for a fresh conversation.
         self.session_id = ""
+        self.terminal_provider = "open_grok"
+        self.terminal_workdir = ""
+        self.terminal_project_root = ""
+        self.terminal_session_id = ""
 
     def add(self, role, text):
         self.messages.append(ChatMessage(role, text))
@@ -45,10 +46,29 @@ class ChatHistory:
         self._streaming = ChatMessage("assistant", "")
         self.messages.append(self._streaming)
 
+    def begin_thought(self):
+        """Start (or reopen) a muted reasoning block for this turn."""
+        if self._streaming is not None and self._streaming.role == "thought":
+            return
+        self.end_assistant()
+        self._streaming = ChatMessage("thought", "")
+        self.messages.append(self._streaming)
+
     def append_stream(self, text):
         if self._streaming is None:
             self.begin_assistant()
         self._streaming.text += text
+
+    def append_thought(self, text):
+        """Append one cleaned reasoning line (Open Grok thought events)."""
+        line = str(text or "").strip()
+        if not line:
+            return
+        self.begin_thought()
+        # One bullet per thought event so chunks do not run together.
+        if self._streaming.text:
+            self._streaming.text += "\n"
+        self._streaming.text += "· " + line
 
     def end_assistant(self):
         # Drop the placeholder if nothing was streamed.
@@ -63,12 +83,32 @@ class ChatHistory:
         self.messages = []
         self._streaming = None
         self.session_id = ""
+        self.terminal_provider = "open_grok"
+        self.terminal_workdir = ""
+        self.terminal_project_root = ""
+        self.terminal_session_id = ""
+
+    def set_terminal_state(self, workdir=None, project_root=None,
+                           session_id=None):
+        """Mirror discoverable Open Grok state without claiming a transcript."""
+        if workdir is not None:
+            self.terminal_workdir = str(workdir or "")
+        if project_root is not None:
+            self.terminal_project_root = str(project_root or "")
+        if session_id is not None:
+            self.terminal_session_id = str(session_id or "")
 
     def to_json(self):
         return json.dumps(
             {
                 "schema": SCHEMA,
                 "session_id": self.session_id,
+                "terminal": {
+                    "provider": self.terminal_provider,
+                    "workdir": self.terminal_workdir,
+                    "project_root": self.terminal_project_root,
+                    "session_id": self.terminal_session_id,
+                },
                 "messages": [{"role": message.role, "text": message.text}
                              for message in self.messages],
             },
@@ -82,6 +122,15 @@ class ChatHistory:
             return
         if isinstance(data, dict):
             self.session_id = str(data.get("session_id") or "")
+            terminal = data.get("terminal") or {}
+            if isinstance(terminal, dict):
+                self.terminal_provider = str(
+                    terminal.get("provider") or "open_grok")
+                self.terminal_workdir = str(terminal.get("workdir") or "")
+                self.terminal_project_root = str(
+                    terminal.get("project_root") or "")
+                self.terminal_session_id = str(
+                    terminal.get("session_id") or "")
             items = data.get("messages") or []
         else:
             # Transcripts written before the session id was carried.

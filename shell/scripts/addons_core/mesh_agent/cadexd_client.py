@@ -120,6 +120,23 @@ def read_engine_manifest(directory):
     return freecadcmd, module_dir
 
 
+def _bundled_payload_root(freecadcmd):
+    """Validated staged payload root owning ``freecadcmd``, or None."""
+    target = os.path.abspath(str(freecadcmd or ""))
+    target_key = os.path.normcase(target)
+    directory = os.path.dirname(target)
+    for _depth in range(4):
+        found = read_engine_manifest(directory)
+        if found is not None and os.path.normcase(
+                os.path.abspath(found[0])) == target_key:
+            return directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    return None
+
+
 def find_bundled_engine(bundle_roots=()):
     """First valid engine payload among ``bundle_roots``, or None.
 
@@ -226,6 +243,44 @@ def default_command(freecadcmd, module_dir):
     return [freecadcmd, "-c", bootstrap]
 
 
+def engine_child_env(freecadcmd):
+    """Environment for a FreeCADCmd / cadexd child.
+
+    The staged Windows payload puts FreeCADApp.dll under ``bin/`` and the
+    workbench extensions (``Part.pyd``, ``Sketcher.pyd``, …) under ``lib/``.
+    Without those directories on ``PATH`` / visible to the interpreter, the
+    Python ``Part`` package loads as a shell of pure-Python files and
+    ``Part.makeBox`` is missing — which is exactly the
+    ``DOMAIN_CANDIDATE_FAILED`` failures Cadex hit on the first Windows
+    builds. Those overrides are valid only for a manifest-validated Cadex
+    payload. Stock FreeCAD installs, developer trees, and arbitrary explicit
+    paths inherit the parent environment unchanged.
+    """
+    env = os.environ.copy()
+    if os.name != "nt":
+        return env
+    freecadcmd = os.path.abspath(str(freecadcmd or ""))
+    root = _bundled_payload_root(freecadcmd)
+    if root is None:
+        return env
+    bin_dir = os.path.dirname(freecadcmd)
+    lib_dir = os.path.join(root, "lib")
+    prepend = [p for p in (bin_dir, lib_dir, root) if p and os.path.isdir(p)]
+    if prepend:
+        env["PATH"] = os.pathsep.join(prepend + [env.get("PATH", "")])
+    # Payload carries its own Lib/ + DLLs/ (Windows conda layout).
+    env["PYTHONHOME"] = root
+    # Ensure workbench .pyd modules are importable if layout is nonstandard.
+    extra = [lib_dir, bin_dir, root]
+    py_path = os.pathsep.join(p for p in extra if os.path.isdir(p))
+    if py_path:
+        prev = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            py_path if not prev else py_path + os.pathsep + prev
+        )
+    return env
+
+
 class CadexdClient:
     """Owns one cadexd child for one project root."""
 
@@ -248,11 +303,13 @@ class CadexdClient:
 
     def _spawn(self):
         self._frames = queue.Queue()
+        freecadcmd = self.command[0] if self.command else ""
         self._process = subprocess.Popen(
             self.command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            env=engine_child_env(freecadcmd),
         )
         reader = threading.Thread(
             target=self._read_frames, args=(self._process, self._frames),

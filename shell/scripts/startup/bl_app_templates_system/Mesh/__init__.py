@@ -46,9 +46,12 @@ from bpy.app.handlers import persistent
 def _ensure_agent_addon():
     # Must run deferred: add-on paths are not registered yet while the app
     # template's own register() executes during startup.
+    # default_set=True so Cadex remembers the add-on across launches (UserDef).
+    # Cadex *is* this product; leaving it off every restart was a stock-Blender
+    # courtesy that does not apply when the only app template is Mesh.
     import addon_utils
     try:
-        addon_utils.enable("mesh_agent", default_set=False)
+        addon_utils.enable("mesh_agent", default_set=True, persistent=True)
     except Exception:
         import traceback
         traceback.print_exc()
@@ -83,29 +86,92 @@ def _hide_splash():
     preferences.is_dirty = was_dirty
 
 
+def _ensure_online_access():
+    """Cadex chat needs network (Open Grok / agent). Enable the System flag.
+
+    Same dirty-flag care as ``_hide_splash``: product default for this app
+    template, not a permanent write into the user's shared prefs if we can
+    avoid it. Blender still may persist the toggle when they save prefs.
+    """
+    preferences = bpy.context.preferences
+    system = preferences.system
+    if getattr(system, "use_online_access", True):
+        return
+    was_dirty = preferences.is_dirty
+    system.use_online_access = True
+    preferences.is_dirty = was_dirty
+
+
+def _ensure_viewport_overlays():
+    """Turn viewport overlays (floor grid) on for the Cadex 3D views.
+
+    Mesh ``startup.blend`` ships with ``show_overlays = False`` for a clean
+    CAD look, which also hides the floor grid. Users expect a grid and a way
+    to toggle it; enable overlays here, then they can turn them off from
+    Edit > Toggle Viewport Overlays (or Shift+Alt+Z once mesh_agent is on).
+    """
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            for space in area.spaces:
+                if space.type != 'VIEW_3D':
+                    continue
+                space.overlay.show_overlays = True
+                space.overlay.show_floor = True
+                space.overlay.show_ortho_grid = True
+
+
 def _apply():
     try:
+        _ensure_online_access()
         _ensure_agent_addon()
         _cadex_topbar()
+        _ensure_viewport_overlays()
     except Exception:
         import traceback
         traceback.print_exc()
     return None
 
 
-@persistent
-def load_handler(_):
+def _schedule_apply():
     if bpy.app.background:
         return
-    _hide_splash()
     if not bpy.app.timers.is_registered(_apply):
         bpy.app.timers.register(_apply, first_interval=0.1)
 
 
+@persistent
+def load_handler(_):
+    """Factory startup (fresh Cadex launch with --app-template Mesh)."""
+    if bpy.app.background:
+        return
+    _hide_splash()
+    # Online access is also applied from the timer: some builds resolve
+    # preferences after load handlers, and chat needs the flag set before
+    # the first turn.
+    try:
+        _ensure_online_access()
+    except Exception:
+        pass
+    _schedule_apply()
+
+
+@persistent
+def load_post_handler(_):
+    """Any .blend open: keep mesh_agent on (opening a file is not factory startup)."""
+    if bpy.app.background:
+        return
+    _schedule_apply()
+
+
 def register():
     bpy.app.handlers.load_factory_startup_post.append(load_handler)
+    bpy.app.handlers.load_post.append(load_post_handler)
 
 
 def unregister():
     if load_handler in bpy.app.handlers.load_factory_startup_post:
         bpy.app.handlers.load_factory_startup_post.remove(load_handler)
+    if load_post_handler in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(load_post_handler)

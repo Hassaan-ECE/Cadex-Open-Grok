@@ -237,6 +237,7 @@ _ROLE_ICONS = {
     "user": 'USER',
     "assistant": 'LIGHT',
     "status": 'INFO',
+    "thought": 'SORTTIME',
 }
 
 
@@ -712,80 +713,128 @@ class CADEX_PARAMS_PT_parameters(Panel):
                      icon='CHECKMARK')
 
 
+def _draw_tui_lines(column, text, wrap, prefix=""):
+    """Wrap and draw plain text lines (Open-Grok-style transcript body)."""
+    first = True
+    for paragraph in (text or "").split("\n"):
+        for line in textwrap.wrap(paragraph, wrap) or [""]:
+            if first and prefix:
+                column.label(text=prefix + line)
+                first = False
+            else:
+                column.label(text=line)
+                first = False
+
+
 class CADEX_CHAT_PT_transcript(Panel):
-    """The conversation, in the chat editor's main region."""
+    """Legacy panel transcript (headless chat).
+
+    Cadex chat is the embedded Open Grok terminal by default; this panel
+    stays registered for tests/fallback but does not draw in the product UI.
+    """
 
     bl_space_type = 'CADEX_CHAT'
     bl_region_type = 'WINDOW'
     bl_options = {'HIDE_HEADER'}
     bl_label = "Chat"
 
-    # No poll: this is the chat editor, so this is where the chat goes.
+    @classmethod
+    def poll(cls, context):
+        # Terminal is the default Cadex chat surface.
+        return False
 
     def draw(self, context):
         layout = self.layout
+        layout.use_property_split = False
+        layout.use_property_decorate = False
         agent = agent_module.get_agent()
 
-        # The model selector is in the editor's header (spaces.py) -- it is a
-        # setting, and the header is where an editor's chrome belongs. Every
-        # *action*, the two pin gestures included, is in one row under the
-        # message box (draw_chat_buttons).
         from . import cadex_backend
-        # One warning row, not a wall of text: the remedy lives in the
-        # add-on preferences, which is where the fix is applied.
         ok, reason, _remedy = cadex_backend.preflight()
         if not ok:
             warning = layout.row()
             warning.alert = True
             warning.label(text=reason, icon='ERROR')
 
-        # A duplicated or Save-As'd file names an engine project that does not
-        # exist; the .blend still carries the script, so offer to re-run it
-        # rather than leave the user with geometry nothing can edit.
         if cadex_backend.orphaned_project(context.scene):
-            orphan = layout.box().column(align=True)
-            orphan.label(text="This file's engine project is empty.",
+            orphan = layout.column(align=True)
+            orphan.alert = True
+            orphan.label(text="engine project empty — re-adopt script",
                          icon='ERROR')
             orphan.operator(MESH_AGENT_OT_adopt_script.bl_idname,
-                            icon='FILE_REFRESH')
+                            text="Adopt script", icon='FILE_REFRESH')
 
-        # Rough character wrap width from the region width (~7 px per char,
-        # minus panel padding). blf-measured wrapping can come later.
-        wrap = max(24, int(context.region.width / 7.2) - 6)
+        # ~7 px per char; slightly denser than before for TUI feel.
+        wrap = max(28, int(context.region.width / 6.6) - 8)
 
-        for message in agent.history.messages[-40:]:
-            if message.role == "status":
+        for message in agent.history.messages[-48:]:
+            role = message.role
+            text = message.text or ""
+
+            if role == "status":
+                # Tool / system lines: single muted row, · prefix like a TUI log.
                 row = layout.row()
                 row.enabled = False
-                row.label(text=message.text, icon='INFO')
+                row.scale_y = 0.85
+                label = text if text.startswith("·") else ("· " + text)
+                row.label(text=label)
                 continue
-            box = layout.box()
-            column = box.column(align=True)
-            first = True
-            for paragraph in message.text.split("\n"):
-                for line in textwrap.wrap(paragraph, wrap) or [""]:
-                    if first:
-                        column.label(text=line, icon=_ROLE_ICONS[message.role])
-                        first = False
-                    else:
-                        column.label(text=line)
+
+            if role == "thought":
+                col = layout.column(align=True)
+                col.enabled = False
+                col.scale_y = 0.85
+                head = col.row()
+                head.label(text="thinking")
+                for paragraph in text.split("\n"):
+                    paragraph = paragraph.strip()
+                    if not paragraph:
+                        continue
+                    # Already bulleted from history.append_thought
+                    for line in textwrap.wrap(paragraph, wrap) or [""]:
+                        col.label(text=line)
+                continue
+
+            if role == "user":
+                col = layout.column(align=True)
+                tag = col.row()
+                tag.enabled = False
+                tag.scale_y = 0.8
+                tag.label(text="you")
+                body = col.column(align=True)
+                _draw_tui_lines(body, text, wrap)
+                layout.separator(factor=0.4)
+                continue
+
+            # assistant (and anything else)
+            col = layout.column(align=True)
+            tag = col.row()
+            tag.enabled = False
+            tag.scale_y = 0.8
+            tag.label(text="cadex")
+            body = col.column(align=True)
+            _draw_tui_lines(body, text, wrap)
+            layout.separator(factor=0.4)
 
         if agent.busy:
-            row = layout.row()
-            row.label(text="Thinking…", icon='SORTTIME')
+            row = layout.row(align=True)
+            row.scale_y = 0.9
+            row.label(text="… working")
             row.operator(MESH_AGENT_OT_chat_cancel.bl_idname,
-                         text="", icon='CANCEL')
+                         text="esc", icon='CANCEL')
 
 
 class CADEX_CHAT_PT_input(Panel):
-    """The message box and its button row, in the chat editor's execute
-    region -- a normal sizable region, so the box can be several rows tall
-    and stay put while the transcript above it scrolls."""
+    """Legacy message box (headless chat). Hidden — Open Grok owns input."""
 
     bl_space_type = 'CADEX_CHAT'
     bl_region_type = 'EXECUTE'
     bl_options = {'HIDE_HEADER'}
     bl_label = "Message"
+
+    @classmethod
+    def poll(cls, context):
+        return False
 
     def draw(self, context):
         column = self.layout.column(align=True)
@@ -808,7 +857,7 @@ def draw_chat_input(layout, context):
     """
     layout.textbox(context.window_manager, "mesh_chat_input",
                    initial_visible_lines=INPUT_LINES,
-                   placeholder="Ask for a change",
+                   placeholder="Message cadex…  (Enter to send)",
                    confirm_only=True)
 
 

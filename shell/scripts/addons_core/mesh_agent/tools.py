@@ -18,9 +18,12 @@ import traceback
 
 MAX_RESULT_CHARS = 4096
 
-# describe_cad_api serves reference material the model asked for by name;
-# truncating a domain's signatures at 4 KB would defeat its purpose.
-_API_DOMAIN_CHARS = 16384
+# describe_cad_api serves reference material the model asked for by name.
+# The part domain alone is ~30 KB of signatures; paint/paint_faces sit at the
+# end of the export list, so a low cap silently dropped them and the agent
+# thrashed inventing color APIs. Keep room for a full domain, and prefer
+# operation= for a single op when the model already knows the name.
+_API_DOMAIN_CHARS = 65536
 
 # get_script serves the exact text the next edit_script has to match. A
 # truncated script is worse than no script: the model cannot see that the
@@ -213,9 +216,11 @@ TOOL_DEFS = [
             "which functions each modelling domain offers. Call it with no "
             "arguments first for the overview and the function names, then "
             "with a domain name for that domain's full signatures, defaults "
-            "and descriptions. This is served live by the engine, so it is "
-            "always the truth about the version you are talking to — never "
-            "guess an API from memory."
+            "and descriptions. Prefer domain plus operation when you already "
+            "know the function name (e.g. domain=part, operation=paint_faces) "
+            "— that returns one op's docs without a huge dump. For viewport "
+            "colors use part.paint / part.paint_faces (not FreeCAD materials). "
+            "This is served live by the engine — never guess an API from memory."
         ),
         "input_schema": {
             "type": "object",
@@ -225,6 +230,15 @@ TOOL_DEFS = [
                     "description": "One domain (e.g. part, mesh, assembly, "
                                    "partdesign, sketcher). Omit for the "
                                    "overview.",
+                },
+                "operation": {
+                    "type": "string",
+                    "description": "Optional single function name within the "
+                                   "domain (e.g. paint_faces, box, fillet). "
+                                   "Returns that export's full signature only, "
+                                   "plus the domain's full function name list. "
+                                   "Use this instead of re-reading the whole "
+                                   "domain when looking up one op.",
                 },
             },
         },
@@ -258,15 +272,17 @@ TOOL_DEFS = [
         "name": "viewport_screenshot",
         "description": (
             "Render the current 3D viewport to a small PNG image and return it, so you "
-            "can visually verify the scene. Unavailable when Blender runs headless; "
-            "fall back to scene_summary in that case."
+            "can visually verify the scene. Images are deliberately small (default "
+            "longest edge 480px, max 640) so they survive the chat pipeline — do not "
+            "request huge sizes. Unavailable when Blender runs headless; fall back to "
+            "scene_summary in that case."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "max_size": {
                     "type": "integer",
-                    "description": "Longest edge of the returned image in pixels (default 768).",
+                    "description": "Longest edge in pixels (default 480, max 640).",
                 },
             },
         },
@@ -622,11 +638,18 @@ def _tool_describe_cad_api(tool_input):
     if not domain:
         return _text(json.dumps(cadex_backend.api_overview(payload),
                                 indent=1, sort_keys=True)), False
-    found, block = cadex_backend.api_domain(payload, domain)
+    operation = str(tool_input.get("operation") or "").strip()
+    found, block = cadex_backend.api_domain(
+        payload, domain, operation=operation or None)
     if not found:
         return _text(block), True
-    return _text(_truncate(json.dumps(block, indent=1, sort_keys=True),
-                           _API_DOMAIN_CHARS)), False
+    text = json.dumps(block, indent=1, sort_keys=True)
+    if len(text) <= _API_DOMAIN_CHARS:
+        return _text(text), False
+    # Still too large: keep every function *name* plus a priority subset of
+    # full exports (appearance/paint last in the part list used to vanish).
+    slim = cadex_backend.api_domain_slim(block, limit=_API_DOMAIN_CHARS)
+    return _text(json.dumps(slim, indent=1, sort_keys=True)), False
 
 
 def _tool_get_attached_image(tool_input, agent):
@@ -665,7 +688,12 @@ def _tool_scene_summary(_tool_input):
 
 def _tool_viewport_screenshot(tool_input):
     from . import capture
-    max_size = int(tool_input.get("max_size") or 768)
+    try:
+        max_size = int(tool_input.get("max_size") or 480)
+    except (TypeError, ValueError):
+        max_size = 480
+    # Cap so Open Grok does not drop the image as "truncated" under MCP limits.
+    max_size = max(64, min(max_size, 640))
     image_b64, error = capture.screenshot_png_base64(max_size=max_size)
     if image_b64 is None:
         return _text(error), True

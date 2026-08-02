@@ -21,6 +21,7 @@ whole chat turn.
 import os
 import queue
 import threading
+import time
 import traceback
 
 from . import history as history_module
@@ -28,54 +29,29 @@ from . import modes
 from . import tools
 from .bridge import BridgeServer
 
+# Used when the Claude backend is selected; Open Grok uses prefs / config default.
 DEFAULT_MODEL = "claude-fable-5"
 DEFAULT_TOOL_CAP = 25
+# Default agent CLI for this fork: Open Grok (OAuth). Claude remains optional.
+DEFAULT_AGENT_BACKEND = "open_grok"
 
-SYSTEM_PROMPT = """\
-You are the Mesh assistant: you build and edit parametric 3D models in a live \
-Blender session on behalf of the user. You are their 3D artist and engineer; \
-most users never touch Blender's own UI, so do the work for them.
+# After the AI mutates the model, wait this long with no further tool calls
+# before auto-saving the .blend + chat checkpoint (one save per turn).
+_AUTOSAVE_QUIET_S = 2.0
 
-The model is defined by a single Python script — the source of truth. You \
-never edit the scene directly: you write and evolve the script (write_script), \
-and Mesh rebuilds the scene from it. Rebuilding clears the Model collection \
-and runs the script top-to-bottom with `bpy` available, so the script must be \
-deterministic and self-contained: it creates all geometry, modifiers, \
-materials, lights and cameras itself, never relies on prior scene state, and \
-should stay fast (well under a second).
+# Legacy name: product prompt lives in modes.CADEX_SYSTEM_PROMPT (cadex-agent skill).
+# Kept so `from .agent import SYSTEM_PROMPT` and tests still resolve.
+def _system_prompt_text():
+    from . import modes
+    return modes.CADEX_SYSTEM_PROMPT
 
-Declare every dimension or choice the user might want to tweak as a parameter \
-at the top of the script:
 
-    from mesh_model import params, Float, Int, Bool, Color
-
-    p = params(
-        height=Float(1.8, min=0.5, max=4.0, name="Height",
-                     description="Overall height in meters"),
-        segments=Int(24, min=8, max=64, name="Detail"),
-        hat=Bool(True, name="Top Hat"),
-        body_color=Color((0.9, 0.9, 0.95), name="Body Color"),
-    )
-
-These render as live sliders next to the chat; dragging one re-runs the \
-script. Use p.<id> throughout instead of literal numbers so the model stays \
-parametric, give every Float/Int a sensible min/max, and derive secondary \
-dimensions from the primary parameters so the model scales coherently. Keep \
-parameter ids stable across edits — user-set values persist by id. Use \
-set_params to change values without touching the code.
-
-Rules:
-- Act only through the mcp__mesh__* tools. Call get_script before editing an \
-existing model.
-- When the user attaches images (marked in their message), view them with \
-get_attached_image before building; use them as visual reference.
-- Units are meters, +Z is up. Give objects short meaningful names.
-- write_script reports the rebuild result; on failure, fix the script and \
-rewrite it. Verify the outcome with scene_summary, or viewport_screenshot \
-when a viewport is available, and fix problems you find.
-- Keep chat replies to a few short sentences; they render in a narrow panel. \
-Describe the model and its new parameters, not the code.
-"""
+# Eager string for any code that concatenates SYSTEM_PROMPT at import time.
+# modes.system_prompt() is the live API; this mirrors it once at load.
+try:
+    from .modes import CADEX_SYSTEM_PROMPT as SYSTEM_PROMPT
+except Exception:  # pragma: no cover — import cycle safety
+    SYSTEM_PROMPT = ""
 
 
 def _default_undo_push(message):
@@ -135,6 +111,10 @@ class Agent:
         self._pending = None
         # Per-turn cancel flag, polled by the cadexd client every 50 ms.
         self._cancel_event = threading.Event()
+        # Project auto-save after AI work (embedded TUI + headless turns).
+        self._autosave_dirty = False
+        self._autosave_after = 0.0
+        self._last_autosave_error = ""
 
     # -- setup -------------------------------------------------------------
 
@@ -143,23 +123,37 @@ class Agent:
             self.bridge = BridgeServer(tools.list_tools)
         return self.bridge
 
-    # -- conversation state, which belongs to the .blend -------------------
+    def rotate_bridge(self):
+        """Invalidate old MCP credentials and rebind any headless backend."""
+        if self.bridge is not None:
+            self.bridge.stop()
+            self.bridge = None
+        if self.backend is not None:
+            bridge = self.ensure_bridge()
+            if hasattr(self.backend, "bridge_port"):
+                self.backend.bridge_port = bridge.port
+            if hasattr(self.backend, "bridge_token"):
+                self.backend.bridge_token = bridge.token
+        return self.bridge
+
+    # -- blend-scoped chat state --------------------------------------------
 
     def save_state(self):
-        """Persist the transcript and the session id into the .blend."""
+        """Persist headless history plus terminal metadata into the .blend."""
         if self.backend is not None:
             self.history.session_id = str(
                 getattr(self.backend, "session_id", "") or "")
         self.history.save_to_text_block()
 
     def load_state(self):
-        """Adopt the newly-opened .blend's conversation.
+        """Adopt the newly-opened .blend's headless conversation state.
 
         The Agent is a process-level singleton, so without this the backend
         keeps the *previous* file's session id and the next turn resumes
         the wrong conversation into the wrong model. Opening a file
-        therefore rebinds the session, and a file with no saved session
-        starts a fresh one.
+        therefore rebinds the headless session, and a file with no saved
+        session starts a fresh one. Embedded terminal continuity remains in
+        Open Grok's project workdir; ``history`` only mirrors its metadata.
         """
         self.history.load_from_text_block()
         if self.backend is not None and hasattr(self.backend, "session_id"):
@@ -210,28 +204,82 @@ class Agent:
             from .mock_backend import MockBackend
             return MockBackend(bridge_port=bridge.port, bridge_token=bridge.token)
 
+        # Cadex chat needs network for Open Grok / Claude. Prefer enabling the
+        # System toggle rather than failing with a preferences scavenger hunt.
+        if not bpy.app.online_access:
+            try:
+                prefs_sys = bpy.context.preferences.system
+                if hasattr(prefs_sys, "use_online_access"):
+                    was_dirty = bpy.context.preferences.is_dirty
+                    prefs_sys.use_online_access = True
+                    bpy.context.preferences.is_dirty = was_dirty
+            except Exception:
+                pass
         if not bpy.app.online_access:
             self.history.add(
                 "status",
-                "Online access is disabled. Enable it in Preferences > System > "
-                "Network to use the assistant.")
+                "Online access is disabled. Enable it in Edit > Preferences > "
+                "System > Network > Allow Online Access, then try again.")
             return None
 
-        from .backend import ClaudeCodeBackend, find_claude
         prefs = get_prefs()
-        claude_path = find_claude(prefs.claude_path if prefs is not None else "")
+        backend_id = (
+            getattr(prefs, "agent_backend", None)
+            if prefs is not None
+            else None
+        ) or DEFAULT_AGENT_BACKEND
+        tool_names = [tool["name"] for tool in tools.list_tools()]
+        system_prompt = modes.system_prompt()
+        max_turns = (
+            prefs.max_tool_calls if prefs is not None else DEFAULT_TOOL_CAP
+        )
+
+        if backend_id == "open_grok":
+            from .open_grok_backend import (
+                MODEL_CONFIG_DEFAULT,
+                OpenGrokBackend,
+                find_open_grok,
+            )
+            path = find_open_grok(
+                prefs.open_grok_path if prefs is not None else "")
+            if path is None:
+                self.history.add(
+                    "status",
+                    "Open Grok CLI not found. Install open-grok, ensure it is "
+                    "on PATH (or set Open Grok Path in add-on preferences), "
+                    "then run `open-grok login --oauth` and/or "
+                    "`open-grok login --codex` (OAuth; no API keys).")
+                return None
+            model = (
+                prefs.model if prefs is not None else MODEL_CONFIG_DEFAULT
+            )
+            return OpenGrokBackend(
+                open_grok_path=path,
+                model=model,
+                system_prompt=system_prompt,
+                tool_names=tool_names,
+                bridge_port=bridge.port,
+                bridge_token=bridge.token,
+                max_turns=max_turns,
+            )
+
+        # Optional Claude Code path (requires Anthropic subscription).
+        from .backend import ClaudeCodeBackend, find_claude
+        claude_path = find_claude(
+            prefs.claude_path if prefs is not None else "")
         if claude_path is None:
             self.history.add(
                 "status",
-                "Claude Code CLI not found. Install it (https://claude.com/claude-code) "
-                "or set its path in the add-on preferences.")
+                "Claude Code CLI not found. Install it "
+                "(https://claude.com/claude-code) or switch Agent Backend to "
+                "Open Grok in add-on preferences.")
             return None
         model = prefs.model if prefs is not None else DEFAULT_MODEL
         return ClaudeCodeBackend(
             claude_path=claude_path,
             model=model,
-            system_prompt=modes.system_prompt(),
-            tool_names=[tool["name"] for tool in tools.list_tools()],
+            system_prompt=system_prompt,
+            tool_names=tool_names,
             bridge_port=bridge.port,
             bridge_token=bridge.token,
         )
@@ -301,6 +349,7 @@ class Agent:
         self._tool_calls = 0
         self._mutations = 0
         self._got_result = False
+        self._thought_open = False
         self.last_error = ""
         self._cancel_event.clear()
         self.busy = True
@@ -342,7 +391,26 @@ class Agent:
             self.drain()
         except Exception:
             traceback.print_exc()
-        return 0.1 if self.busy else None
+        try:
+            self._maybe_autosave()
+        except Exception:
+            traceback.print_exc()
+        # Keep pumping while a headless turn OR the embedded Open Grok
+        # terminal is alive (mesh MCP tools arrive on the bridge either way).
+        try:
+            from . import terminal_session
+            term_live = terminal_session.is_running()
+            if term_live:
+                terminal_session.poll_and_redraw()
+        except Exception:
+            term_live = False
+        # Stay scheduled while an autosave is pending after AI work.
+        wait_autosave = self._autosave_dirty
+        if self.busy or term_live or wait_autosave:
+            if wait_autosave and not self.busy and not term_live:
+                return 0.25
+            return 0.05 if term_live else 0.1
+        return None
 
     def _ensure_timer(self):
         import bpy
@@ -350,6 +418,15 @@ class Agent:
             return
         if not bpy.app.timers.is_registered(self._timer_fn):
             bpy.app.timers.register(self._timer_fn, first_interval=0.05)
+
+    def _ensure_bridge_pump(self):
+        """Start the main-thread drain timer for bridge-only traffic.
+
+        Used by the embedded Open Grok terminal: there is no headless turn
+        (``busy`` stays false), but mesh MCP tool calls still need draining.
+        """
+        self.ensure_bridge()
+        self._ensure_timer()
 
     def drain(self):
         """Process pending tool calls and stream events. Main thread only."""
@@ -385,7 +462,7 @@ class Agent:
                 returncode, stderr_tail = event[1], event[2]
                 if self.busy and not self._got_result:
                     detail = stderr_tail or "exit code {:d}".format(returncode)
-                    self._finish(error="Claude Code ended unexpectedly: " + detail)
+                    self._finish(error="Agent ended unexpectedly: " + detail)
                 elif self.busy:
                     self._finish()
 
@@ -394,15 +471,18 @@ class Agent:
         return handled
 
     def _handle_tool_request(self, request):
-        cap = self._tool_cap()
-        if self._tool_calls >= cap:
-            request.reply(
-                [{"type": "text",
-                  "text": "Tool call limit ({:d}) reached for this turn. "
-                          "Summarize progress and stop.".format(cap)}],
-                True)
-            return
-        self._tool_calls += 1
+        # Cap only applies to headless chat turns. The embedded Open Grok
+        # terminal is a long-lived session and must not be cut mid-session.
+        if self.busy:
+            cap = self._tool_cap()
+            if self._tool_calls >= cap:
+                request.reply(
+                    [{"type": "text",
+                      "text": "Tool call limit ({:d}) reached for this turn. "
+                              "Summarize progress and stop.".format(cap)}],
+                    True)
+                return
+            self._tool_calls += 1
         result = tools.execute(request.tool, request.input, agent=self)
         if isinstance(result, tools.Pending):
             self._pending = (request, result)
@@ -420,7 +500,43 @@ class Agent:
         content, is_error = result
         if not is_error and request.tool in tools.MUTATING_TOOLS:
             self._mutations += 1
+            # Embedded Open Grok turns never set busy/_finish; schedule a
+            # quiet-period autosave so the .blend + chat survive a quit.
+            self._mark_autosave_needed()
         request.reply(content, is_error)
+
+    def _mark_autosave_needed(self):
+        """Note that AI changed the model; save once tools go quiet."""
+        self._autosave_dirty = True
+        self._autosave_after = time.time() + _AUTOSAVE_QUIET_S
+        self._ensure_timer()
+
+    def _bridge_idle(self):
+        if self._pending is not None:
+            return False
+        if self.bridge is None:
+            return True
+        try:
+            return self.bridge.requests.empty()
+        except Exception:
+            return True
+
+    def _maybe_autosave(self):
+        """Silent-save the project after the AI finishes mutating work."""
+        if not self._autosave_dirty:
+            return
+        if time.time() < self._autosave_after:
+            return
+        if self.busy or not self._bridge_idle():
+            # Still mid-turn; wait for another quiet window.
+            self._autosave_after = time.time() + _AUTOSAVE_QUIET_S
+            return
+        self._autosave_dirty = False
+        ok, detail = autosave_project()
+        if ok:
+            _tag_redraw()
+        else:
+            self._last_autosave_error = detail or "autosave failed"
 
     def _poll_pending(self):
         """Poll the deferred tool call; True once it has been answered."""
@@ -445,17 +561,33 @@ class Agent:
             if event.get("type") == "content_block_delta":
                 delta = event.get("delta", {})
                 if delta.get("type") == "text_delta":
-                    self.history.append_stream(delta["text"])
+                    text = delta.get("text") or ""
+                    if not text:
+                        return
+                    # Open Grok reasoning: muted, one bullet per thought
+                    # event, so the user can follow and cancel.
+                    if obj.get("cadex_thought"):
+                        self._thought_open = True
+                        self.history.append_thought(text)
+                        return
+                    if getattr(self, "_thought_open", False):
+                        # Close the thought block before the final reply.
+                        self.history.end_assistant()
+                        self.history.begin_assistant()
+                        self._thought_open = False
+                    self.history.append_stream(text)
         elif obj_type == "assistant":
             for block in obj.get("message", {}).get("content", []):
                 if block.get("type") == "tool_use":
                     name = block.get("name", "")
                     short = name.rsplit("__", 1)[-1]
+                    self._thought_open = False
                     self.history.end_assistant()
                     self.history.add("status", "· " + short)
                     self.history.begin_assistant()
         elif obj_type == "result":
             self._got_result = True
+            self._thought_open = False
             if obj.get("is_error"):
                 self.last_error = str(obj.get("result", "unknown error"))
 
@@ -484,10 +616,46 @@ class Agent:
             self.history.add("status", "Error: " + self.last_error)
         if self._mutations > 0:
             self._undo_push("Mesh: " + self._prompt[:60])
+            # Headless path: turn is over — save immediately.
+            self._autosave_dirty = True
+            self._autosave_after = 0.0
+            try:
+                self._maybe_autosave()
+            except Exception:
+                traceback.print_exc()
         try:
             self.save_state()
         except Exception:
             traceback.print_exc()
+
+
+def autosave_project():
+    """Write the .blend and checkpoint Open Grok session metadata.
+
+    Returns (ok, detail). Skips silently when the file has never been saved
+    (no path) — the compose/save-first flow owns that case.
+    """
+    import bpy
+
+    path = str(bpy.data.filepath or "").strip()
+    if not path:
+        return False, "unsaved"
+    try:
+        # Save even if Blender's dirty flag is clear: engine geometry lives
+        # beside the file and may have changed without marking the blend.
+        bpy.ops.wm.save_mainfile()
+    except Exception as ex:
+        return False, str(ex)
+    try:
+        from . import terminal_session
+        terminal_session.checkpoint_session()
+    except Exception:
+        pass
+    try:
+        get_agent().save_state()
+    except Exception:
+        pass
+    return True, path
 
 
 # Module-level singleton used by the UI.

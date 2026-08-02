@@ -23,26 +23,69 @@ class CADEX_CHAT_HT_header(Header):
 
     def draw(self, context):
         layout = self.layout
+        # Editor-type dropdown (3D View / Cadex Chat / Params / Text / …)
+        # — same affordance as every other Blender editor header.
         layout.template_header()
 
-        # The model selector takes effect at the next turn; the conversation
-        # itself continues. It edits the add-on preference, so it is also the
-        # default for future sessions. (The mode dropdown that sat above it is
-        # gone with the local modes -- ADR-030.)
-        prefs = agent_module.get_prefs()
-        if prefs is not None:
-            layout.prop(prefs, "model", text="")
-
-        # The header carries *state*, not actions. Every button that does
-        # something sits in one row under the message box (ui.draw_chat_
-        # buttons) -- including the two pin gestures, which used to be here
-        # and were the last thing splitting the chat's controls across two
-        # places. What is left of them here is the count, which is status:
-        # it says what the next message will carry.
+        # All Cadex chrome lives here (no footer under the terminal).
+        from . import cadex_collision
         from . import cadex_pick
-        pending = cadex_pick.pending_pin_count()
-        if pending:
-            layout.label(text="{:d} pinned".format(pending))
+        from . import cadex_terminal_pick
+        from . import terminal_session
+        from . import wiring_ui
+
+        # Section toggles (icons only). Depressed while that view is open.
+        views = layout.row(align=True)
+        views.operator(ui_module.MESH_AGENT_OT_toggle_params.bl_idname,
+                       text="", icon='OPTIONS',
+                       depress=ui_module.params_area(context.screen) is not None)
+        views.operator(MESH_AGENT_OT_show_script.bl_idname,
+                       text="", icon='TEXT',
+                       depress=script_area(context.screen) is not None)
+        views.operator(wiring_ui.MESH_AGENT_OT_toggle_wiring.bl_idname,
+                       text="", icon='NODETREE',
+                       depress=wiring_ui.wiring_area(context.screen) is not None)
+        views.operator(ui_module.MESH_AGENT_OT_toggle_collision.bl_idname,
+                       text="", icon='MOD_PHYSICS',
+                       depress=cadex_collision.SCENE_FLAG in context.scene)
+
+        # Model tools (icons only).
+        tools = layout.row(align=True)
+        tools.operator(ui_module.MESH_AGENT_OT_rebuild_model.bl_idname,
+                       text="", icon='FILE_REFRESH')
+        pinned = cadex_pick.pending_pin_count()
+        tools.operator("mesh_agent.pick_pin", icon='EYEDROPPER',
+                       text="{:d}".format(pinned) if pinned else "")
+        tools.operator("mesh_agent.pick_point", icon='CURSOR', text="")
+        term = tools.row(align=True)
+        term.enabled = bool(
+            cadex_terminal_pick.MESH_AGENT_OT_define_terminal.poll(context))
+        queued = cadex_terminal_pick.pending_terminal_count()
+        term.operator(
+            cadex_terminal_pick.MESH_AGENT_OT_define_terminal.bl_idname,
+            icon='SNAP_MIDPOINT',
+            text="{:d}".format(queued) if queued else "")
+
+        # Product mark + terminal lifecycle (project-scoped chat).
+        mark = layout.row(align=True)
+        mark.label(text="Cadex Chat")
+        if not terminal_session.blend_is_saved():
+            mark.operator(
+                "mesh_agent.save_project_for_chat",
+                text="Save project",
+                icon='FILE_TICK',
+            )
+        else:
+            mark.operator(
+                "mesh_agent.terminal_restart",
+                text="",
+                icon='FILE_REFRESH',
+            )
+            mark.operator(
+                "mesh_agent.terminal_new_chat",
+                text="",
+                icon='FILE_NEW',
+            )
 
 
 class CADEX_PARAMS_HT_header(Header):

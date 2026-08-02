@@ -125,6 +125,43 @@ class CADEX_MT_file(Menu):
         layout.operator("wm.quit_blender", text="Quit", icon='QUIT')
 
 
+class MESH_AGENT_OT_toggle_viewport_overlays(Operator):
+    """Show or hide 3D viewport overlays (floor grid, axes, etc.).
+
+    Cadex's Mesh layout starts with overlays off for a clean CAD look, and
+    the stock Shift+Alt+Z keymap is often missing in this stripped shell —
+    so we ship our own toggle under Edit and rebind Shift+Alt+Z.
+    """
+
+    bl_idname = "mesh_agent.toggle_viewport_overlays"
+    bl_label = "Toggle Viewport Overlays"
+    bl_description = "Show or hide the floor grid and other 3D view overlays"
+
+    def execute(self, context):
+        spaces = []
+        for window in context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type != 'VIEW_3D':
+                    continue
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        spaces.append(space)
+        if not spaces:
+            self.report({'WARNING'}, "No 3D viewport found")
+            return {'CANCELLED'}
+        # Flip all views to match the first (keeps them in sync).
+        new_state = not spaces[0].overlay.show_overlays
+        for space in spaces:
+            space.overlay.show_overlays = new_state
+            if new_state:
+                space.overlay.show_floor = True
+                space.overlay.show_ortho_grid = True
+        self.report(
+            {'INFO'},
+            "Viewport overlays " + ("on" if new_state else "off"))
+        return {'FINISHED'}
+
+
 class CADEX_MT_edit(Menu):
     bl_label = "Edit"
 
@@ -133,6 +170,12 @@ class CADEX_MT_edit(Menu):
 
         layout.operator("ed.undo", icon='LOOP_BACK')
         layout.operator("ed.redo", icon='LOOP_FORWARDS')
+
+        layout.separator()
+
+        layout.operator("mesh_agent.toggle_viewport_overlays",
+                        text="Toggle Viewport Overlays / Grid",
+                        icon='GRID')
 
         layout.separator()
 
@@ -206,21 +249,48 @@ def uninstall():
 
 classes = (
     MESH_AGENT_OT_import_asset,
+    MESH_AGENT_OT_toggle_viewport_overlays,
     CADEX_MT_file,
     CADEX_MT_edit,
     CADEX_MT_editor_menus,
 )
 
+_addon_keymaps = []
+
+
+def _register_overlay_keymap():
+    """Shift+Alt+Z → toggle overlays (missing from Cadex's stripped keymaps)."""
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    if kc is None:
+        return
+    km = kc.keymaps.new(name="3D View", space_type='VIEW_3D')
+    kmi = km.keymap_items.new(
+        "mesh_agent.toggle_viewport_overlays",
+        type='Z', value='PRESS', shift=True, alt=True)
+    _addon_keymaps.append((km, kmi))
+
+
+def _unregister_overlay_keymap():
+    for km, kmi in _addon_keymaps:
+        try:
+            km.keymap_items.remove(kmi)
+        except Exception:
+            pass
+    _addon_keymaps.clear()
+
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    _register_overlay_keymap()
 
 
 def unregister():
     # Before the menus go: a header pointing at menu classes that are no
     # longer registered draws a row of errors, and disabling the add-on is
     # exactly when that would happen.
+    _unregister_overlay_keymap()
     uninstall()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

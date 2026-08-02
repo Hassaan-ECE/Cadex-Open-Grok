@@ -5,25 +5,15 @@
 /** \file
  * \ingroup spcadexchat
  *
- * The Cadex chat editor: the conversation with the assistant.
+ * The Cadex chat editor: full-height Open Grok terminal.
  *
- * Three regions, and the middle one is the whole point:
+ * Two regions:
  *
- * - #RGN_TYPE_WINDOW  the transcript, a panel region that scrolls.
- * - #RGN_TYPE_EXECUTE the message box and its button row.
- * - #RGN_TYPE_HEADER  the model selector and the chat-level buttons.
+ * - #RGN_TYPE_WINDOW  terminal paint (mesh_agent draw handler).
+ * - #RGN_TYPE_HEADER  editor switcher, section icons, Cadex Chat title.
  *
- * The message box used to live in a screen *area* of its own, because a
- * header region is one row tall by construction and the box needs several.
- * #RGN_TYPE_EXECUTE is not covered by #RGN_TYPE_IS_HEADER_ANY, so it is an
- * ordinary sizable region: the input is a region of this editor now, and the
- * fourth area -- and the geometry guessing that told the areas apart -- is
- * gone. Unlike the project editor's execute region this one is user-resizable;
- * dragging the message box taller is wanted here.
- *
- * The editor is deliberately empty of C-side content. Everything drawn in it
- * comes from panels registered by the `mesh_agent` add-on (`spaces.py`,
- * `ui.py`), which is where UI belongs.
+ * No EXECUTE footer: section toggles and restart live in the header.
+ * Older screens that still serialize an EXECUTE region are hidden on init.
  */
 
 #include "BLI_listbase.hh"
@@ -34,6 +24,7 @@
 #include "ED_screen.hh"
 #include "ED_space_api.hh"
 
+#include "DNA_screen_types.h"
 #include "DNA_space_types.h"
 
 #include "MEM_guardedalloc.h"
@@ -48,9 +39,6 @@
 
 namespace blender {
 
-/** Message box plus its button row: three text lines and the padding. */
-#define CADEX_CHAT_EXECUTE_ROWS 6
-
 static SpaceLink *cadex_chat_create(const ScrArea * /*area*/, const Scene * /*scene*/)
 {
   SpaceCadexChat *chat_space = MEM_new<SpaceCadexChat>("cadex chat space");
@@ -61,21 +49,11 @@ static SpaceLink *cadex_chat_create(const ScrArea * /*area*/, const Scene * /*sc
     ARegion *region = BKE_area_region_new();
     BLI_addtail(&chat_space->regionbase, region);
     region->regiontype = RGN_TYPE_HEADER;
-    /* Always on top, like the other panel-column editors -- see
-     * BKE_screen_header_alignment_reset(), which pins the same set. */
     region->alignment = RGN_ALIGN_TOP;
   }
 
   {
-    /* Execution region: the message box. */
-    ARegion *region = BKE_area_region_new();
-    BLI_addtail(&chat_space->regionbase, region);
-    region->regiontype = RGN_TYPE_EXECUTE;
-    region->alignment = RGN_ALIGN_BOTTOM;
-  }
-
-  {
-    /* Main region: the transcript. */
+    /* Main: Open Grok terminal (full remaining height). */
     ARegion *region = BKE_area_region_new();
     BLI_addtail(&chat_space->regionbase, region);
     region->regiontype = RGN_TYPE_WINDOW;
@@ -86,7 +64,17 @@ static SpaceLink *cadex_chat_create(const ScrArea * /*area*/, const Scene * /*sc
 
 static void cadex_chat_free(SpaceLink * /*sl*/) {}
 
-static void cadex_chat_init(wmWindowManager * /*wm*/, ScrArea * /*area*/) {}
+static void cadex_chat_init(wmWindowManager * /*wm*/, ScrArea *area)
+{
+  /* Drop legacy footers so older .blend layouts go full-height. */
+  for (ARegion *region = static_cast<ARegion *>(area->regionbase.first); region != nullptr;
+       region = region->next)
+  {
+    if (region->regiontype == RGN_TYPE_EXECUTE) {
+      region->flag |= RGN_FLAG_HIDDEN;
+    }
+  }
+}
 
 static SpaceLink *cadex_chat_duplicate(SpaceLink *sl)
 {
@@ -105,7 +93,7 @@ static void cadex_chat_operatortypes() {}
 static void cadex_chat_keymap(wmKeyConfig * /*keyconf*/) {}
 
 /* -------------------------------------------------------------------- */
-/** \name Main Region (the transcript)
+/** \name Main Region (terminal)
  * \{ */
 
 static void cadex_chat_main_region_init(wmWindowManager *wm, ARegion *region)
@@ -163,7 +151,7 @@ void ED_spacetype_cadex_chat()
   st->keymap = cadex_chat_keymap;
   st->blend_write = cadex_chat_blend_write;
 
-  /* regions: main window */
+  /* regions: main window (terminal) */
   art = MEM_new_zeroed<ARegionType>("spacetype cadex chat region");
   art->regionid = RGN_TYPE_WINDOW;
   art->init = cadex_chat_main_region_init;
@@ -184,10 +172,11 @@ void ED_spacetype_cadex_chat()
 
   BLI_addhead(&st->regiontypes, art);
 
-  /* regions: execution window (the message box) */
+  /* Legacy EXECUTE type kept registered so old screens load; new areas never
+   * create one, and #cadex_chat_init hides any that remain. */
   art = MEM_new_zeroed<ARegionType>("spacetype cadex chat region");
   art->regionid = RGN_TYPE_EXECUTE;
-  art->prefsizey = CADEX_CHAT_EXECUTE_ROWS * HEADERY;
+  art->prefsizey = 0;
   art->init = ED_region_panels_init;
   art->layout = ED_region_panels_layout;
   art->draw = ED_region_panels_draw;

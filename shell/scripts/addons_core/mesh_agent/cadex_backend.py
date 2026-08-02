@@ -1827,18 +1827,144 @@ def api_overview(payload):
         "Each domain is a global in the script (see api_global). This is "
         "the function list only; call describe_cad_api with a domain name "
         "for full signatures, defaults and descriptions before using one "
-        "you are unsure of.")
+        "you are unsure of. Prefer domain + operation (e.g. domain=part, "
+        "operation=paint_faces) when you already know the function name — "
+        "especially for viewport color (paint / paint_faces).")
     return overview
 
 
-def api_domain(payload, domain):
-    """One domain's full block, or (False, message) naming the real ones."""
+# Ops that must not disappear when a domain dump is slimmed for size.
+# paint/paint_faces are last in the part export list and were being cut off.
+_PRIORITY_OPS = frozenset({
+    "paint", "paint_faces", "box", "cylinder", "sphere", "cone",
+    "fuse", "cut", "common", "fillet", "chamfer", "extrude", "revolve",
+    "transform", "mirror",
+})
+
+
+def api_domain(payload, domain, operation=None):
+    """One domain's full block, or (False, message) naming the real ones.
+
+    When ``operation`` is set, return only that export (plus the full function
+    name list) so the agent can look up paint_faces without reading 30 KB.
+    """
     domains = dict(payload.get("domains") or {})
     block = domains.get(str(domain or ""))
     if block is None:
         return False, ("Unknown domain {!r}. The engine serves: {:s}.".format(
             domain, ", ".join(sorted(domains))))
-    return True, block
+    if not operation:
+        return True, block
+
+    op_key = str(operation).strip().lower()
+    exports = list(block.get("exports") or [])
+    names = []
+    matched = []
+    for item in exports:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if name:
+            names.append(name)
+        low = name.lower()
+        if low == op_key or low.endswith("." + op_key) or op_key in low:
+            matched.append(item)
+    # Related siblings: paint <-> paint_faces when either is requested.
+    if matched and op_key in {"paint", "paint_faces"}:
+        want = {"paint", "paint_faces"}
+        have = {str(m.get("name") or "").lower() for m in matched}
+        for item in exports:
+            if not isinstance(item, dict):
+                continue
+            n = str(item.get("name") or "").lower()
+            if n in want and n not in have:
+                matched.append(item)
+                have.add(n)
+    if not matched:
+        return False, (
+            "Domain {0!r} has no operation {1!r}. Known functions: {2:s}. "
+            "Call describe_cad_api(domain={0!r}) without operation for the "
+            "full domain, or pick a name from that list.".format(
+                domain, operation, ", ".join(names) if names else "(none)"))
+    slim = {
+        "api_global": block.get("api_global", domain),
+        "accepted_output_types": block.get("accepted_output_types") or [],
+        "functions": names,
+        "exports": matched,
+        "operation_filter": str(operation).strip(),
+        "how_to_read_this": (
+            "Full signatures for the requested operation only. "
+            "`functions` lists every name in this domain; call again with "
+            "another operation= to fetch its docs."),
+    }
+    # Preserve any extra domain-level fields that are not the giant exports.
+    for key, value in block.items():
+        if key in slim or key == "exports":
+            continue
+        slim[key] = value
+    return True, slim
+
+
+def api_domain_slim(block, limit=65536):
+    """Shrink a full domain dump so priority ops (paint…) always survive.
+
+    Keeps every function name, then packs full export docs until near ``limit``.
+    Priority ops are packed first so they are never the ones cut by size.
+    """
+    exports = [e for e in list(block.get("exports") or [])
+               if isinstance(e, dict)]
+    names = [str(e.get("name") or "") for e in exports if e.get("name")]
+    priority = []
+    rest = []
+    for item in exports:
+        name = str(item.get("name") or "").lower()
+        if name in _PRIORITY_OPS:
+            priority.append(item)
+        else:
+            rest.append(item)
+
+    base = {
+        "api_global": block.get("api_global"),
+        "accepted_output_types": block.get("accepted_output_types") or [],
+        "functions": names,
+        "exports": [],
+        "truncated": True,
+        "how_to_read_this": (
+            "Domain dump was too large for one tool result. Every function "
+            "name is listed under `functions`. Full signatures included for "
+            "a priority subset (paint/paint_faces, common solid ops). Call "
+            "describe_cad_api(domain=…, operation=<name>) for any other op."),
+    }
+    for key, value in block.items():
+        if key in base or key == "exports":
+            continue
+        base[key] = value
+
+    packed = []
+    for item in priority + rest:
+        trial = dict(base)
+        trial["exports"] = packed + [item]
+        text = json.dumps(trial, indent=1, sort_keys=True, default=str)
+        # Leave a little headroom for the truncated flag / note.
+        if len(text) > max(1024, int(limit) - 200) and packed:
+            omitted = [str(e.get("name") or "") for e in exports
+                       if e not in packed and e is not item]
+            # also the current item and remaining rest
+            remaining = []
+            seen = {id(x) for x in packed}
+            for e in exports:
+                if id(e) not in seen:
+                    n = str(e.get("name") or "")
+                    if n:
+                        remaining.append(n)
+            base["exports"] = packed
+            base["omitted_export_docs"] = remaining
+            base["truncated"] = True
+            return base
+        packed.append(item)
+    base["exports"] = packed
+    base["truncated"] = False
+    return base
 
 
 def resolve_pin(scene, output, selection):

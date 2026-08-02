@@ -162,7 +162,19 @@ def test_transcript_persistence():
         check(data.get("schema") == history_module.SCHEMA,
               "transcript carries its schema")
         check("session_id" in data,
-              "transcript carries the Claude session id")
+              "transcript carries the headless backend session id")
+        agent.history.set_terminal_state(
+            workdir=os.path.join(tempfile.gettempdir(), "cadex-terminal-test"),
+            project_root=os.path.join(tempfile.gettempdir(), "project.cadex"),
+            session_id="terminal-session-test",
+        )
+        agent.save_state()
+        data = json.loads(text_block.as_string())
+        check(data.get("terminal", {}).get("provider") == "open_grok",
+              "blend state identifies the terminal provider")
+        check(data.get("terminal", {}).get("workdir", "").endswith(
+                  "cadex-terminal-test"),
+              "blend state mirrors the terminal workdir")
         messages = data["messages"]
         check(messages[0]["role"] == "user"
               and messages[0]["text"] == "say hello",
@@ -176,6 +188,10 @@ def test_transcript_persistence():
         fresh.load_from_text_block()
         check(len(fresh.messages) == len(agent.history.messages),
               "transcript round-trips through the text block")
+        check(fresh.terminal_session_id == "terminal-session-test",
+              "terminal metadata round-trips without a fake TUI transcript")
+        check(fresh.terminal_project_root.endswith("project.cadex"),
+              "terminal metadata remains tied to its project root")
     finally:
         agent.shutdown()
 
@@ -392,8 +408,30 @@ def test_cadex_engine_discovery():
     check(cadexd_client.cadexd_module_dir(found, (bundle,))
           == os.path.join(bundle, "Mod", "cadex"),
           "bundled manifest supplies the module dir")
+    check(cadexd_client._bundled_payload_root(bundle_binary) == bundle,
+          "the manifest positively identifies the staged payload")
+    check(cadexd_client._bundled_payload_root(unix_binary) is None,
+          "a stock/dev layout is not mistaken for the staged payload")
     ok, reason, remedy = cadexd_client.preflight("", (bundle,))
     check(ok and not reason and not remedy, "preflight green on the bundle")
+
+    inherited_home = os.environ.get("PYTHONHOME")
+    inherited_path = os.environ.get("PYTHONPATH")
+    arbitrary = os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
+    arbitrary_env = cadexd_client.engine_child_env(arbitrary)
+    check(arbitrary_env.get("PYTHONHOME") == inherited_home,
+          "an arbitrary executable does not get a fabricated PYTHONHOME")
+    check(arbitrary_env.get("PYTHONPATH") == inherited_path,
+          "an arbitrary executable inherits PYTHONPATH")
+    payload_env = cadexd_client.engine_child_env(bundle_binary)
+    if os.name == "nt":
+        check(os.path.normcase(payload_env.get("PYTHONHOME", ""))
+              == os.path.normcase(os.path.abspath(bundle)),
+              "the validated Windows payload still receives PYTHONHOME")
+    else:
+        check(payload_env.get("PYTHONHOME") == inherited_home,
+              "non-Windows children inherit PYTHONHOME")
 
     # A manifest for a protocol this client does not speak is refused,
     # not guessed at.
@@ -537,10 +575,10 @@ def test_cadex_overlay_carries_no_api_names():
 
 
 
-# -- conversation state lives in the .blend ---------------------------------
+# -- blend-scoped chat state -------------------------------------------------
 
 def test_session_id_round_trips_and_is_per_file():
-    """The transcript and the Claude session id belong to the .blend.
+    """The classic transcript and headless session id belong to the .blend.
 
     The Agent is a process-level singleton, so before M8 opening a second
     file kept the first file's session id and the next turn resumed the
@@ -610,6 +648,54 @@ def test_session_id_round_trips_and_is_per_file():
     finally:
         agent.backend = None
         agent.history.clear()
+        import shutil
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def test_terminal_project_rebind_contract():
+    """A project switch invalidates both terminal identity and MCP token."""
+    print("test_terminal_project_rebind_contract")
+    from mesh_agent import cadex_backend, terminal_session
+
+    class _TransportBackend:
+        def __init__(self, bridge):
+            self.bridge_port = bridge.port
+            self.bridge_token = bridge.token
+
+        def cancel(self):
+            pass
+
+    isolated = agent_module.Agent()
+    first_bridge = isolated.ensure_bridge()
+    first_token = first_bridge.token
+    isolated.backend = _TransportBackend(first_bridge)
+    try:
+        second_bridge = isolated.rotate_bridge()
+        check(second_bridge is not None and second_bridge.token != first_token,
+              "file rebind rotates the MCP token")
+        check(isolated.backend.bridge_port == second_bridge.port
+              and isolated.backend.bridge_token == second_bridge.token,
+              "headless transport follows the fresh bridge")
+    finally:
+        isolated.shutdown()
+
+    workdir = tempfile.mkdtemp(prefix="mesh-terminal-root-")
+    old_session = terminal_session._session
+    original_project_root = cadex_backend.project_root
+    try:
+        first_root = os.path.join(workdir, "one.cadex")
+        second_root = os.path.join(workdir, "two.cadex")
+        terminal_session._session = type(
+            "_Terminal", (), {"project_root": first_root})()
+        cadex_backend.project_root = lambda _scene: first_root
+        check(not terminal_session.needs_rebind(object()),
+              "the current project keeps its terminal")
+        cadex_backend.project_root = lambda _scene: second_root
+        check(terminal_session.needs_rebind(object()),
+              "a new project root requires a terminal rebind")
+    finally:
+        terminal_session._session = old_session
+        cadex_backend.project_root = original_project_root
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -779,17 +865,17 @@ def test_editor_menu_is_short():
 
 
 def test_panels_are_homed_on_the_cadex_editors():
-    """Each panel names the editor it belongs to, and no poll asks where it
-    is being drawn -- that was the whole job of the geometry classifier."""
+    """Terminal chrome is visible; legacy headless chat panels stay hidden."""
     print("test_panels_are_homed_on_the_cadex_editors")
     from mesh_agent import ui as mesh_ui
 
     expected = {
-        'CADEX_CHAT_PT_transcript': ('CADEX_CHAT', 'WINDOW'),
-        'CADEX_CHAT_PT_input': ('CADEX_CHAT', 'EXECUTE'),
-        'CADEX_PARAMS_PT_parameters': ('CADEX_PARAMS', 'WINDOW'),
+        'CADEX_CHAT_PT_transcript': ('CADEX_CHAT', 'WINDOW', True),
+        'CADEX_CHAT_PT_input': ('CADEX_CHAT', 'EXECUTE', True),
+        'CADEX_CHAT_PT_terminal_bar': ('CADEX_CHAT', 'EXECUTE', False),
+        'CADEX_PARAMS_PT_parameters': ('CADEX_PARAMS', 'WINDOW', False),
     }
-    for name, (space, region) in expected.items():
+    for name, (space, region, hidden) in expected.items():
         cls = getattr(bpy.types, name, None)
         if cls is None:
             check(False, "{:s} is registered".format(name))
@@ -798,13 +884,90 @@ def test_panels_are_homed_on_the_cadex_editors():
               "{:s} draws in {:s}".format(name, space))
         check(cls.bl_region_type == region,
               "{:s} draws in the {:s} region".format(name, region))
-        check("poll" not in cls.__dict__,
-              "{:s} has no poll".format(name))
+        if hidden:
+            check("poll" in cls.__dict__ and not cls.poll(bpy.context),
+                  "{:s} is intentionally hidden".format(name))
+        else:
+            check("poll" not in cls.__dict__,
+                  "{:s} has no poll".format(name))
 
     check(not hasattr(mesh_ui, "_area_roles"),
           "the geometry classifier is gone")
     check(not hasattr(mesh_ui, "_column_role"),
           "the column-role lookup is gone")
+
+
+def test_terminal_renderer_state_is_reload_safe():
+    """The VT has visible ink and stale draw callbacks cannot repaint it."""
+    print("test_terminal_renderer_state_is_reload_safe")
+    from mesh_agent import terminal_ui
+    from mesh_agent.terminal_vt import TerminalScreen
+
+    screen = TerminalScreen(cols=8, rows=2)
+    screen.feed(b"\x1b[38;2;35;209;139mCadex")
+    cell = screen.snapshot_lines()[0][0]
+    fg, bg = screen.cell_colors(cell)
+    check(len(fg) == 4 and len(bg) == 4
+          and fg[3] == 1.0 and bg[3] == 1.0,
+          "terminal colors are opaque RGBA tuples")
+    check(min(fg[:3]) > 0.0 and max(fg[:3]) > max(bg[:3]),
+          "truecolor terminal ink remains visible on the dark panel")
+
+    candidates = list(terminal_ui._mono_font_candidates())
+    check(bool(candidates) and os.path.isfile(candidates[0])
+          and os.path.basename(candidates[0]) == "DejaVuSansMono.woff2",
+          "the bundled Blender mono font is the first renderer choice")
+
+    class _FakeBLF:
+        CLIPPING = 1
+        ROTATION = 2
+        SHADOW = 3
+        WORD_WRAP = 4
+        NO_FALLBACK = 5
+        MONOCHROME = 6
+
+        def __init__(self):
+            self.disabled = []
+            self.aspect_value = None
+            self.rotation_value = None
+
+        def disable(self, font_id, flag):
+            self.disabled.append((font_id, flag))
+
+        def aspect(self, font_id, value):
+            self.aspect_value = (font_id, value)
+
+        def rotation(self, font_id, value):
+            self.rotation_value = (font_id, value)
+
+    fake_blf = _FakeBLF()
+    terminal_ui._reset_blf_state(fake_blf, 25)
+    check({flag for _font, flag in fake_blf.disabled}
+          == {1, 2, 3, 4, 5, 6},
+          "persistent BLF clipping and transform flags are disabled")
+    check(fake_blf.aspect_value == (25, 1.0)
+          and fake_blf.rotation_value == (25, 0.0),
+          "BLF aspect and rotation reset to terminal defaults")
+
+    namespace = bpy.app.driver_namespace
+    key = terminal_ui._DRAW_GENERATION_KEY
+    sentinel = object()
+    prior_generation = namespace.get(key, sentinel)
+    original_draw = terminal_ui._draw_terminal
+    calls = []
+    try:
+        namespace[key] = 42
+        terminal_ui._draw_terminal = lambda: calls.append("draw")
+        terminal_ui._draw_terminal_dispatch(41)
+        terminal_ui._draw_terminal_dispatch(42)
+    finally:
+        terminal_ui._draw_terminal = original_draw
+        if prior_generation is sentinel:
+            namespace.pop(key, None)
+        else:
+            namespace[key] = prior_generation
+    check(calls == ["draw"],
+          "only the current draw-handler generation can paint the chat")
 
 
 #: Menus the File menu points at that are registered from C
@@ -1226,9 +1389,11 @@ def main():
         test_transcript_persistence()
         test_session_id_round_trips_and_is_per_file()
         test_new_conversation_starts_a_fresh_session()
+        test_terminal_project_rebind_contract()
         test_cadex_editors_are_registered()
         test_editor_menu_is_short()
         test_panels_are_homed_on_the_cadex_editors()
+        test_terminal_renderer_state_is_reload_safe()
         test_cadex_topbar_is_the_product_bar()
         test_confirming_the_input_sends()
         test_every_chat_action_is_in_one_row_under_the_message_box()
