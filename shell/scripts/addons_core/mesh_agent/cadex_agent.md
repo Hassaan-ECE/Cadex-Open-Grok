@@ -103,7 +103,12 @@ bodies = [
                   collision=assembly.collision("box", size_mm=(s, s, s), friction=0.5)),
 ]
 sim = assembly.dynamics(asm, bodies, end_time_s=1.5, frames_per_second=60)
-result = {"floor": floor, "cube": cube, "asm": asm, "diag": diag, "sim": sim}
+# Every assembly component once (+ joints if any) — required publication rule.
+result = {
+    "floor": floor, "cube": cube,
+    "floor_c": floor_c, "cube_c": cube_c,
+    "asm": asm, "diag": diag, "sim": sim,
+}
 ```
 
 ### Recipe B — gravity hinge (verified M2 path)
@@ -136,4 +141,4 @@ result = {"plate": plate, "arm": arm, "base": base, "swing": swing,
 ### After success
 Tell the user: **Cadex Chat header → Params (sliders) → Simulation → Play**.
 If they asked for a large multi-body scene, only then scale up while keeping
-the same **large drop** and lean `result`.
+the same **large drop** and returning every component/joint once in `result`.
