@@ -144,6 +144,16 @@ def _display_block(
         source_output = str(item.get("source_output") or "")
         if source_output:
             entry["source_output"] = source_output
+        # Viewport paint from DomainValue properties (per-output color MVP).
+        definition = item.get("definition")
+        if isinstance(definition, Mapping):
+            props = definition.get("properties")
+            if isinstance(props, Mapping):
+                appearance = props.get("appearance")
+                if isinstance(appearance, Mapping) and (
+                    appearance.get("diffuse") or appearance.get("faces")
+                ):
+                    entry["appearance"] = dict(appearance)
         tessellation = item.get("display")
         if isinstance(tessellation, Mapping):
             entry["tessellation"] = {

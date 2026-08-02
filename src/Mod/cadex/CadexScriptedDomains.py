@@ -228,6 +228,8 @@ XSCRIPT_WORKBENCH_PACKS: dict[str, XScriptWorkbenchPack] = {
             "mirror",
             "project",
             "refine",
+            "paint",
+            "paint_faces",
         ),
         production_ready=True,
     ),

@@ -2427,6 +2427,11 @@ def _build(
         return _shape(operation, "shape", _argument(payload, 0, "shape")).toNurbs()
     if operation == "reverse":
         return _shape(operation, "shape", _argument(payload, 0, "shape")).reversed()
+    if operation == "paint":
+        # Geometry-preserving display attachment; appearance lives on properties.
+        return _shape(operation, "shape", _argument(payload, 0, "shape"))
+    if operation == "paint_faces":
+        return _shape(operation, "shape", _argument(payload, 0, "shape"))
     if operation == "shape_from_mesh":
         # The ingest counterpart of sew: triangles in, BREP topology out.
         if _ASSET_ROOT is None or _MESH_INGEST is None:

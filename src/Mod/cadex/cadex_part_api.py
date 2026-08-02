@@ -15,6 +15,7 @@ from typing import Any, Iterable, Sequence
 
 from CadexSubshapeQuery import SELECTOR_KEYS
 from CadexTerminals import Terminal, TerminalError, TerminalSet, declared_layout, selector_layout
+from cadex_appearance import appearance_from_color, appearance_from_face_paint
 from cadex_domain_api import DomainValue
 from cadex_mesh_api import payload_tree_is_deterministic
 
@@ -505,11 +506,18 @@ class PartDomainAPI:
         output_type: str,
         *arguments: Any,
         label: str = "",
+        color: Any = None,
         **properties: Any,
     ) -> DomainValue:
         clean_label = _label(operation, label)
         if clean_label:
             properties["label"] = clean_label
+        # Display paint (viewport color). Digest-neutral for tessellation; the
+        # recipe still carries appearance so rebuild restores paint.
+        if color is not None:
+            properties["appearance"] = appearance_from_color(
+                color, operation=operation
+            )
         return DomainValue(
             domain="part",
             operation=operation,
@@ -544,8 +552,13 @@ class PartDomainAPI:
         origin: Sequence[float] = (0.0, 0.0, 0.0),
         direction: Sequence[float] = (0.0, 0.0, 1.0),
         label: str = "",
+        color: Any = None,
     ) -> DomainValue:
-        """Create an oriented rectangular solid; dimensions must be positive."""
+        """Create an oriented rectangular solid; dimensions must be positive.
+
+        ``color`` is optional viewport paint: ``[r,g,b]`` / ``[r,g,b,a]`` in
+        0–1 or 0–255, or ``#RRGGBB``. Display-only; not a physical material.
+        """
 
         operation = "box"
         return self._value(
@@ -557,6 +570,7 @@ class PartDomainAPI:
             origin=_vector(operation, "origin", origin),
             direction=_vector(operation, "direction", direction, nonzero=True),
             label=label,
+            color=color,
         )
 
     def wedge(
@@ -657,6 +671,7 @@ class PartDomainAPI:
         direction: Sequence[float] = (0.0, 0.0, 1.0),
         angle: float = 360.0,
         label: str = "",
+        color: Any = None,
     ) -> DomainValue:
         """Create a full or partial cylinder along an explicit axis."""
 
@@ -671,6 +686,7 @@ class PartDomainAPI:
             _number(operation, "height", height, minimum=0.0, strict=True),
             origin=_vector(operation, "origin", origin),
             direction=_vector(operation, "direction", direction, nonzero=True),
+            color=color,
             angle=clean_angle,
             label=label,
         )
@@ -1811,6 +1827,7 @@ class PartDomainAPI:
         refine: bool = True,
         output_type: str | None = None,
         label: str = "",
+        color: Any = None,
     ) -> DomainValue:
         """Boolean-union shapes in one OCC operation with optional fuzzy tolerance."""
 
@@ -1832,6 +1849,7 @@ class PartDomainAPI:
             tolerance=_number(operation, "tolerance", tolerance, minimum=0.0),
             refine=bool(refine),
             label=label,
+            color=color,
         )
 
     def cut(
@@ -2379,7 +2397,7 @@ class PartDomainAPI:
             label=label,
         )
 
-    def refine(self, shape: DomainValue, *, label: str = "") -> DomainValue:
+    def refine(self, shape: DomainValue, *, label: str = "", color: Any = None) -> DomainValue:
         """Copy a shape and remove redundant splitter edges and faces."""
 
         operation = "refine"
@@ -2389,6 +2407,84 @@ class PartDomainAPI:
             clean_shape.output_type,
             clean_shape,
             label=label,
+            color=color,
+        )
+
+    def paint(self, shape: DomainValue, *, color: Any, label: str = "") -> DomainValue:
+        """Attach viewport paint to a solid (or other publishable topology).
+
+        Returns a new DomainValue with the same geometry recipe as ``shape``
+        plus an appearance. Prefer painting **after** booleans when you need
+        a single color on the result. ``color`` accepts ``[r,g,b]``,
+        ``[r,g,b,a]`` (0–1 or 0–255), or ``#RRGGBB``.
+        """
+
+        operation = "paint"
+        clean_shape = _shape(
+            operation,
+            "shape",
+            shape,
+            allowed=_PUBLISHABLE_TYPES,
+        )
+        return self._value(
+            operation,
+            clean_shape.output_type,
+            clean_shape,
+            label=label,
+            color=color,
+        )
+
+    def paint_faces(
+        self,
+        shape: DomainValue,
+        *,
+        faces: Sequence[Any] | None = None,
+        color: Any = None,
+        colors: Mapping[Any, Any] | None = None,
+        label: str = "",
+    ) -> DomainValue:
+        """Paint individual BREP faces (1-based face indices).
+
+        Forms::
+
+            part.paint_faces(body, faces=[1, 2], color=(1, 0, 0))
+            part.paint_faces(body, colors={1: \"#fff\", 2: (0, 1, 0)})
+
+        Face ids match ``inspect_model`` / ``cadex_face`` (1-based). Multiple
+        ``paint_faces`` calls merge: later faces overwrite earlier ones; a
+        whole-body ``diffuse`` from prior ``paint``/``color=`` is kept as the
+        default for unlisted faces.
+        """
+
+        operation = "paint_faces"
+        clean_shape = _shape(
+            operation,
+            "shape",
+            shape,
+            allowed=_PUBLISHABLE_TYPES,
+        )
+        base = None
+        if isinstance(clean_shape.properties, Mapping):
+            raw = clean_shape.properties.get("appearance")
+            if isinstance(raw, Mapping):
+                base = dict(raw)
+        appearance = appearance_from_face_paint(
+            faces=faces,
+            color=color,
+            colors=colors,
+            base=base,
+            operation=operation,
+        )
+        clean_label = _label(operation, label)
+        properties: dict[str, Any] = {"appearance": appearance}
+        if clean_label:
+            properties["label"] = clean_label
+        return DomainValue(
+            domain="part",
+            operation=operation,
+            output_type=clean_shape.output_type,
+            arguments=(clean_shape,),
+            properties=properties,
         )
 
     @property
@@ -2448,4 +2544,6 @@ class PartDomainAPI:
             "mirror",
             "project",
             "refine",
+            "paint",
+            "paint_faces",
         )
