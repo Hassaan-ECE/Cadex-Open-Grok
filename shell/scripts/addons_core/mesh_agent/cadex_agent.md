@@ -66,6 +66,18 @@ same large drop height.
   Put axis/angle/position **inside** `offset` as a list or map, e.g.
   `offset={"position": [x,y,z], "axis": [1,0,0], "angle_degrees": 90}`.
   Never pass top-level `axis=` / `angle_degrees=` on `connector` (TypeError).
+- **Connector / collision offsets are COMPONENT-LOCAL (critical):**
+  `offset` position is in the **component’s own frame** (mm relative to that
+  part’s origin), **not** scene/world XYZ. Do **not** use shop coordinates
+  like `puppet_x`, `bench_y`, `puppet_shoulder_z` inside connector or
+  `collision(..., offset=…)`.
+  - Author each limb solid in **local** coords (joint or hip at a known local
+    point); place it with `assembly.component(..., placement=[wx,wy,wz])`.
+  - Connector example: neck on torso `offset={"position": [0, 0, torso_h], ...}`
+    not `[world_x, world_y, world_z]`.
+  - World-frame offsets cause huge MuJoCo joint anchors, wrong arm axes, and
+    **`MJCF body_pos` drift ~1.0** (export verify fails; max 1e-5). Fix frames;
+    do not thrash ungrounding or remove MJCF.
 - **`result` assembly publication (very common reject):**
   - Exactly **one** `assembly.assembly(...)` and **one** `assembly.solve(...)`
     diagnostics.

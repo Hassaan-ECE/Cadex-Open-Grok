@@ -81,6 +81,10 @@ research loops.
 - Fixed base: `component(..., grounded=True)` — never `fixed=True`.
 - Connectors: `connector(comp, sel, offset=…)` only. Put axis/angle/position
   **inside** `offset` (list or map). Never top-level `axis=` on connector.
+- **Offsets are component-local, never scene XYZ.** Connector and collision
+  `offset` positions are mm in that part’s frame. Use local limb solids +
+  `component(..., placement=[wx,wy,wz])` for world pose. World coords in
+  offsets → wrong hinges and MJCF `body_pos` drift (~1.0) failures.
 - Assembly programs need **exactly one** `assembly` + **one**
   `assembly.solve` diagnostics in `result`, plus the dynamics sim when asked.
 - **Return every component and every joint** that you passed into
