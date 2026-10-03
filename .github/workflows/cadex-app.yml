@@ -32,17 +32,8 @@ name: Cadex
 # the build tree and once against the staged payload.
 
 on:
-  schedule:
-    # 08:00 UTC is 03:00 CDT / 02:00 CST.
-    - cron: "0 8 * * 0,3"
+  # Automatic runs disabled at the repository owner's request.
   workflow_dispatch:
-  push:
-    branches: [main]
-    tags:
-      - "v*"
-      - "cadex-*"
-  pull_request:
-    branches: [main]
 
 permissions:
   contents: read
